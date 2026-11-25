@@ -1,0 +1,14 @@
+{
+  "name": "@messaging/contracts",
+  "private": true,
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "node ../../scripts/build-workspace.mjs",
+    "test": "node ../../scripts/run-tests.mjs"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
+  }
+}

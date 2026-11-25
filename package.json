@@ -1,0 +1,28 @@
+{
+  "name": "messaging-platform",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "node scripts/workspaces.mjs build",
+    "test": "node scripts/workspaces.mjs test",
+    "start:a": "node --env-file=.env apps/api-gateway/dist/main.js",
+    "start:b": "node --env-file=.env apps/messaging-service/dist/main.js",
+    "keys:generate": "node scripts/generate-keys.mjs",
+    "nats:bootstrap": "node scripts/bootstrap-nats.mjs",
+    "nats:verify": "node scripts/verify-nats-auth.mjs",
+    "service:new": "node scripts/new-service.mjs"
+  },
+  "devDependencies": {
+    "@nats-io/jwt": "^0.1.0",
+    "@nats-io/nkeys": "^2.1.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^6.0.2"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

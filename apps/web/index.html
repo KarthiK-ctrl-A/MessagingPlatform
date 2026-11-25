@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b3440">
+  <meta name="description" content="Private messaging with your care team">
+  <title>Careline · Messages</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="auth-page" id="authView">
+    <div class="auth-brand">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">✳</span><span>careline<span class="brand-dot">.</span></span></div>
+      <div class="auth-story"><span class="eyebrow light">A BETTER WAY TO STAY CONNECTED</span><h1>Care continues<br><em>between visits.</em></h1><p>A quiet, private place to keep the conversation with your care team going.</p></div>
+      <div class="auth-footer">Private conversations for patients and clinicians</div>
+      <div class="orbit orbit-one" aria-hidden="true"></div><div class="orbit orbit-two" aria-hidden="true"></div>
+    </div>
+    <main class="auth-panel"><div class="auth-card">
+      <span class="eyebrow">WELCOME BACK</span><h2>Sign in to messages</h2><p class="muted">Use your existing patient or clinician account.</p>
+      <form id="loginForm"><label for="email">Email address</label><input id="email" name="email" type="email" autocomplete="username" placeholder="you@example.com" required><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required><button class="primary-button full" id="loginButton" type="submit">Sign in</button></form>
+      <p class="form-error" id="loginError" role="alert" hidden></p>
+      <div class="auth-note"><span aria-hidden="true">◈</span> Your messages are only available to your current care team.</div>
+    </div></main>
+  </div>
+  <div class="app-shell" id="chatView" hidden>
+    <aside class="sidebar" aria-label="Conversations">
+      <div class="sidebar-top"><div class="brand"><span class="brand-mark" aria-hidden="true">✳</span><span>careline<span class="brand-dot">.</span></span></div><span class="workspace-label">MESSAGES</span><div class="sidebar-heading"><div><h2>Conversations</h2><p>Stay close to your care.</p></div><button class="icon-button" id="refreshButton" type="button" title="Refresh conversations" aria-label="Refresh conversations">↻</button></div><button class="open-button" id="openDoctorButton" type="button" disabled><span class="open-icon" aria-hidden="true">＋</span><span id="openActionLabel">Message my doctor</span></button><div class="contact-picker" id="contactPicker" hidden aria-label="Assigned patients"></div></div>
+      <div class="conversation-list" id="conversationList" role="list" aria-label="Your conversations"></div>
+      <div class="sidebar-bottom"><div class="account-avatar" id="accountAvatar" aria-hidden="true">U</div><div class="account-copy"><strong id="accountName">Account</strong><span>Signed in securely</span></div><button class="signout-button" id="signOutButton" type="button">Sign out</button></div>
+    </aside>
+    <main class="thread-panel">
+      <header class="thread-header"><div class="thread-avatar" aria-hidden="true">✳</div><div><h1 id="threadTitle">Your messages</h1><p id="threadSubtitle">Select a conversation to get started</p></div><span class="private-pill">PRIVATE</span></header>
+      <div class="thread-body" id="threadBody"><div class="empty-state" id="emptyState"><div class="empty-icon" aria-hidden="true">✳</div><h2>A space to connect</h2><p id="emptyDescription">Choose a conversation, or start one with your currently assigned doctor.</p></div><div class="message-area" id="messageArea" hidden><div class="history-actions"><button class="text-button" id="olderButton" type="button" hidden>Load older messages</button></div><div class="message-list" id="messageList" aria-live="polite" aria-relevant="additions"></div></div></div>
+      <form class="composer" id="messageForm" hidden><label for="messageInput" class="sr-only">Write a message</label><textarea id="messageInput" rows="1" maxlength="2000" placeholder="Write a message…"></textarea><button class="send-button" id="sendButton" type="submit" aria-label="Send message">Send</button></form><div class="composer-hint" id="composerHint" hidden>Messages refresh automatically every few seconds.</div>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

@@ -1,0 +1,7 @@
+# Messaging architecture pitch
+
+We built a patient-to-doctor messaging system where the client sees one REST API. The public gateway authenticates the user's Supabase token, validates the request, and forwards a signed command over NATS. A private messaging service verifies both the gateway and the user, runs the operation through an internal GraphQL schema, and uses PostgreSQL with row-level security to read or save messages. The result returns through NATS to the gateway, which gives the client a normal HTTP response.
+
+NATS is the internal request/reply transport. It lets the gateway and messaging workers be deployed independently, while subject permissions limit which service can publish or receive each operation. Request IDs follow a call across the gateway, broker path, GraphQL executor, and database logs. The local POC uses NATS operator/account/user JWTs and NKeys plus signed application packets; production across networks still needs private connectivity, TLS, rotation, and stronger deployment controls.
+
+To scale reads and writes, we can run more gateway replicas and more messaging workers in the same NATS queue group. The queue distributes each request to one worker; PostgreSQL indexes, connection limits, and RLS remain the data-plane constraints. We would measure p95/p99 latency and database load before increasing replicas. Adding another domain service follows the same folder layout, versioned contract, distinct NATS identity, signed-request guard, and deployment checklist in `SERVICE_CONVENTIONS.md`.

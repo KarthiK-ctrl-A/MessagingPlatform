@@ -1,0 +1,418 @@
+{
+  "info": {
+    "_postman_id": "9e7089a3-896b-4d7a-a748-7b8b179db812",
+    "name": "Messaging Platform - patient to doctor demo",
+    "description": "Run in order. Supabase handles login; all messaging calls go to gateway A. Use X-Request-ID to trace the internal NATS/GraphQL/DB flow in Podman logs.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "01 Get public auth config from A",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "['patientToken', 'doctorToken', 'conversationId', 'patientMessageId', 'doctorMessageId', 'patientUserId', 'doctorUserId'].forEach(key => pm.environment.unset(key));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('One client-facing HTTP response from gateway A', () => {",
+              "  pm.expect(pm.response.headers.get('X-Request-ID')).to.match(/^[0-9a-f-]{36}$/i);",
+              "  pm.expect(pm.variables.replaceIn(pm.request.url.toString()).startsWith(pm.environment.get('gatewayUrl') + '/v1/')).to.eql(true);",
+              "});",
+              "console.log(pm.info.requestName + ': HTTP ' + pm.response.code + ', ' + pm.response.responseTime + ' ms, X-Request-ID=' + pm.response.headers.get('X-Request-ID'));",
+              "pm.test('Public Supabase settings available', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().supabaseUrl).to.be.a('string').and.not.empty; pm.expect(pm.response.json().publishableKey).to.be.a('string').and.not.empty; });",
+              "const data = pm.response.json();",
+              "if (pm.response.code === 200 && data.supabaseUrl && data.publishableKey) {",
+              "  pm.environment.set('supabaseUrl', data.supabaseUrl.replace(/\\/$/, ''));",
+              "  pm.environment.set('supabasePublishableKey', data.publishableKey);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gatewayUrl}}/v1/public-config"
+      }
+    },
+    {
+      "name": "Patient signs in with Supabase Auth",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.environment.unset('patientToken');",
+              "pm.variables.set('loginEmailJson', JSON.stringify(pm.environment.get('patientEmail') || ''));",
+              "pm.variables.set('loginPasswordJson', JSON.stringify(pm.environment.get('patientPassword') || ''));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Supabase returns a user access token', () => pm.response.to.have.status(200));",
+              "const data = pm.response.json();",
+              "pm.test('Signed in as the expected account', () => {",
+              "  pm.expect(data.access_token).to.be.a('string').and.not.empty;",
+              "  pm.expect(data.user.email.toLowerCase()).to.eql(pm.environment.get('patientEmail').toLowerCase());",
+              "});",
+              "if (pm.response.code === 200 && data.access_token && data.user?.id) {",
+              "  pm.environment.set('patientToken', data.access_token);",
+              "  pm.environment.set('patientUserId', data.user.id);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "apikey",
+            "value": "{{supabasePublishableKey}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{supabaseUrl}}/auth/v1/token?grant_type=password",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"email\":{{loginEmailJson}},\"password\":{{loginPasswordJson}}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "description": "Authentication is directly with Supabase Auth, matching the browser. All subsequent messaging calls use gateway A."
+      }
+    },
+    {
+      "name": "Doctor signs in with Supabase Auth",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.environment.unset('doctorToken');",
+              "pm.variables.set('loginEmailJson', JSON.stringify(pm.environment.get('doctorEmail') || ''));",
+              "pm.variables.set('loginPasswordJson', JSON.stringify(pm.environment.get('doctorPassword') || ''));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Supabase returns a user access token', () => pm.response.to.have.status(200));",
+              "const data = pm.response.json();",
+              "pm.test('Signed in as the expected account', () => {",
+              "  pm.expect(data.access_token).to.be.a('string').and.not.empty;",
+              "  pm.expect(data.user.email.toLowerCase()).to.eql(pm.environment.get('doctorEmail').toLowerCase());",
+              "});",
+              "if (pm.response.code === 200 && data.access_token && data.user?.id) {",
+              "  pm.environment.set('doctorToken', data.access_token);",
+              "  pm.environment.set('doctorUserId', data.user.id);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "apikey",
+            "value": "{{supabasePublishableKey}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{supabaseUrl}}/auth/v1/token?grant_type=password",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"email\":{{loginEmailJson}},\"password\":{{loginPasswordJson}}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "description": "Authentication is directly with Supabase Auth, matching the browser. All subsequent messaging calls use gateway A."
+      }
+    },
+    {
+      "name": "04 Patient opens current doctor conversation",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('One client-facing HTTP response from gateway A', () => {",
+              "  pm.expect(pm.response.headers.get('X-Request-ID')).to.match(/^[0-9a-f-]{36}$/i);",
+              "  pm.expect(pm.variables.replaceIn(pm.request.url.toString()).startsWith(pm.environment.get('gatewayUrl') + '/v1/')).to.eql(true);",
+              "});",
+              "console.log(pm.info.requestName + ': HTTP ' + pm.response.code + ', ' + pm.response.responseTime + ' ms, X-Request-ID=' + pm.response.headers.get('X-Request-ID'));",
+              "pm.test(\"Conversation opened\", () => pm.response.to.have.status(201));",
+              "const data = pm.response.json();",
+              "pm.test(\"Only these two current care users participate\", () => {",
+              "  pm.expect([data.userLow, data.userHigh]).to.have.members([pm.environment.get('patientUserId'), pm.environment.get('doctorUserId')]);",
+              "});",
+              "if (pm.response.code === 201 && data.id) pm.environment.set('conversationId', data.id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{patientToken}}"
+          }
+        ],
+        "url": "{{gatewayUrl}}/v1/conversations/current-doctor"
+      }
+    },
+    {
+      "name": "05 Patient sends message",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.environment.set('patientClientMessageId', pm.variables.replaceIn('{{$guid}}'));",
+              "pm.variables.set('patientMessageJson', JSON.stringify(pm.environment.get('patientMessage') || 'Hello doctor, this is a Postman demo.'));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('One client-facing HTTP response from gateway A', () => {",
+              "  pm.expect(pm.response.headers.get('X-Request-ID')).to.match(/^[0-9a-f-]{36}$/i);",
+              "  pm.expect(pm.variables.replaceIn(pm.request.url.toString()).startsWith(pm.environment.get('gatewayUrl') + '/v1/')).to.eql(true);",
+              "});",
+              "console.log(pm.info.requestName + ': HTTP ' + pm.response.code + ', ' + pm.response.responseTime + ' ms, X-Request-ID=' + pm.response.headers.get('X-Request-ID'));",
+              "pm.test(\"Patient message committed\", () => pm.response.to.have.status(201));",
+              "const data = pm.response.json();",
+              "pm.test(\"Stored message belongs to patient and conversation\", () => {",
+              "  pm.expect(data.senderId).to.eql(pm.environment.get('patientUserId'));",
+              "  pm.expect(data.conversationId).to.eql(pm.environment.get('conversationId'));",
+              "  pm.expect(data.content).to.eql(pm.environment.get('patientMessage'));",
+              "});",
+              "if (pm.response.code === 201 && data.id) pm.environment.set('patientMessageId', data.id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{patientToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{gatewayUrl}}/v1/conversations/{{conversationId}}/messages",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"clientMessageId\":\"{{patientClientMessageId}}\",\"content\":{{patientMessageJson}}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "06 Doctor lists conversations",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('One client-facing HTTP response from gateway A', () => {",
+              "  pm.expect(pm.response.headers.get('X-Request-ID')).to.match(/^[0-9a-f-]{36}$/i);",
+              "  pm.expect(pm.variables.replaceIn(pm.request.url.toString()).startsWith(pm.environment.get('gatewayUrl') + '/v1/')).to.eql(true);",
+              "});",
+              "console.log(pm.info.requestName + ': HTTP ' + pm.response.code + ', ' + pm.response.responseTime + ' ms, X-Request-ID=' + pm.response.headers.get('X-Request-ID'));",
+              "pm.test(\"Doctor can see the conversation\", () => {",
+              "  pm.response.to.have.status(200);",
+              "  pm.expect(pm.response.json().map(item => item.id)).to.include(pm.environment.get('conversationId'));",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{doctorToken}}"
+          }
+        ],
+        "url": "{{gatewayUrl}}/v1/conversations?limit=50"
+      }
+    },
+    {
+      "name": "07 Doctor reads patient message",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('One client-facing HTTP response from gateway A', () => {",
+              "  pm.expect(pm.response.headers.get('X-Request-ID')).to.match(/^[0-9a-f-]{36}$/i);",
+              "  pm.expect(pm.variables.replaceIn(pm.request.url.toString()).startsWith(pm.environment.get('gatewayUrl') + '/v1/')).to.eql(true);",
+              "});",
+              "console.log(pm.info.requestName + ': HTTP ' + pm.response.code + ', ' + pm.response.responseTime + ' ms, X-Request-ID=' + pm.response.headers.get('X-Request-ID'));",
+              "pm.test(\"Doctor receives the exact patient message\", () => {",
+              "  pm.response.to.have.status(200);",
+              "  const message = pm.response.json().items.find(item => item.id === pm.environment.get('patientMessageId'));",
+              "  pm.expect(message).to.exist;",
+              "  pm.expect(message.senderId).to.eql(pm.environment.get('patientUserId'));",
+              "  pm.expect(message.content).to.eql(pm.environment.get('patientMessage'));",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{doctorToken}}"
+          }
+        ],
+        "url": "{{gatewayUrl}}/v1/conversations/{{conversationId}}/messages?limit=50"
+      }
+    },
+    {
+      "name": "08 Doctor replies",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.environment.set('doctorClientMessageId', pm.variables.replaceIn('{{$guid}}'));",
+              "pm.variables.set('doctorMessageJson', JSON.stringify(pm.environment.get('doctorMessage') || 'Hello, I received your message.'));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('One client-facing HTTP response from gateway A', () => {",
+              "  pm.expect(pm.response.headers.get('X-Request-ID')).to.match(/^[0-9a-f-]{36}$/i);",
+              "  pm.expect(pm.variables.replaceIn(pm.request.url.toString()).startsWith(pm.environment.get('gatewayUrl') + '/v1/')).to.eql(true);",
+              "});",
+              "console.log(pm.info.requestName + ': HTTP ' + pm.response.code + ', ' + pm.response.responseTime + ' ms, X-Request-ID=' + pm.response.headers.get('X-Request-ID'));",
+              "pm.test(\"Doctor reply committed\", () => pm.response.to.have.status(201));",
+              "const data = pm.response.json();",
+              "pm.test(\"Reply belongs to doctor\", () => {",
+              "  pm.expect(data.senderId).to.eql(pm.environment.get('doctorUserId'));",
+              "  pm.expect(data.conversationId).to.eql(pm.environment.get('conversationId'));",
+              "  pm.expect(data.content).to.eql(pm.environment.get('doctorMessage'));",
+              "});",
+              "if (pm.response.code === 201 && data.id) pm.environment.set('doctorMessageId', data.id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{doctorToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{gatewayUrl}}/v1/conversations/{{conversationId}}/messages",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"clientMessageId\":\"{{doctorClientMessageId}}\",\"content\":{{doctorMessageJson}}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "09 Patient reads doctor reply",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('One client-facing HTTP response from gateway A', () => {",
+              "  pm.expect(pm.response.headers.get('X-Request-ID')).to.match(/^[0-9a-f-]{36}$/i);",
+              "  pm.expect(pm.variables.replaceIn(pm.request.url.toString()).startsWith(pm.environment.get('gatewayUrl') + '/v1/')).to.eql(true);",
+              "});",
+              "console.log(pm.info.requestName + ': HTTP ' + pm.response.code + ', ' + pm.response.responseTime + ' ms, X-Request-ID=' + pm.response.headers.get('X-Request-ID'));",
+              "pm.test(\"Patient receives the exact doctor reply\", () => {",
+              "  pm.response.to.have.status(200);",
+              "  const message = pm.response.json().items.find(item => item.id === pm.environment.get('doctorMessageId'));",
+              "  pm.expect(message).to.exist;",
+              "  pm.expect(message.senderId).to.eql(pm.environment.get('doctorUserId'));",
+              "  pm.expect(message.content).to.eql(pm.environment.get('doctorMessage'));",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{patientToken}}"
+          }
+        ],
+        "url": "{{gatewayUrl}}/v1/conversations/{{conversationId}}/messages?limit=50"
+      }
+    }
+  ]
+}

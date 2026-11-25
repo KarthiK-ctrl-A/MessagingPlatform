@@ -1,0 +1,51 @@
+services:
+  nats:
+    image: nats:2.12-alpine
+    command: ["-c", "/etc/nats/nats.conf"]
+    volumes:
+      - ./secrets/nats/server.conf:/etc/nats/nats.conf:ro
+    ports:
+      - "127.0.0.1:4222:4222"
+    networks: [internal]
+
+  api-gateway:
+    build: .
+    command: ["node", "apps/api-gateway/dist/main.js"]
+    depends_on: [nats]
+    environment:
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      PORT: 3001
+      NATS_URL: nats://nats:4222
+      NATS_A_CREDENTIALS_FILE: /run/secrets/nats-gateway.creds
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-}
+      A_PRIVATE_KEY: ${A_PRIVATE_KEY}
+      B_PUBLIC_KEY: ${B_PUBLIC_KEY}
+    volumes:
+      - ./secrets/nats/gateway.creds:/run/secrets/nats-gateway.creds:ro
+    ports:
+      - "127.0.0.1:3001:3001"
+    networks: [internal]
+
+  messaging-service:
+    build: .
+    command: ["node", "apps/messaging-service/dist/main.js"]
+    depends_on: [nats]
+    environment:
+      NODE_ENV: development
+      NATS_URL: nats://nats:4222
+      NATS_B_CREDENTIALS_FILE: /run/secrets/nats-worker.creds
+      SUPABASE_URL: ${SUPABASE_URL}
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_CA_CERT_PATH: /app/secrets/db-ca.pem
+      A_PUBLIC_KEY: ${A_PUBLIC_KEY}
+      B_PRIVATE_KEY: ${B_PRIVATE_KEY}
+    volumes:
+      - ./secrets/db-ca.pem:/app/secrets/db-ca.pem:ro
+      - ./secrets/nats/worker.creds:/run/secrets/nats-worker.creds:ro
+    networks: [internal]
+
+networks:
+  internal:
+    internal: false

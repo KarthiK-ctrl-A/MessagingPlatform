@@ -1,0 +1,25 @@
+{
+  "name": "@messaging/messaging-service",
+  "private": true,
+  "version": "0.1.0",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "node ../../scripts/build-workspace.mjs",
+    "test": "node ../../scripts/run-tests.mjs"
+  },
+  "dependencies": {
+    "@messaging/contracts": "0.1.0",
+    "@messaging/security": "0.1.0",
+    "@nestjs/common": "^12.0.1",
+    "@nestjs/core": "^12.0.1",
+    "@nestjs/microservices": "^12.0.1",
+    "@nats-io/transport-node": "^3.0.0",
+    "graphql": "^16.11.0",
+    "pg": "^8.16.3",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.5"
+  }
+}
