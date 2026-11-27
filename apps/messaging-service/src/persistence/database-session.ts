@@ -1,30 +1,72 @@
 import { readFileSync } from 'node:fs';
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { Pool, PoolClient } from 'pg';
+import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Pool, type PoolClient, type QueryResultRow } from 'pg';
+import { requiredEnv } from '@messaging/security';
+import { dbCode, toDomainError } from './database-errors';
 import type { MessageRow } from './row-mappers';
 
-@Injectable()
-export class DatabaseSession implements OnModuleDestroy, OnModuleInit {
-  private readonly logger = new Logger(DatabaseSession.name);
-  private cleanupTimer?: NodeJS.Timeout;
-  private fastHistoryAvailable = false;
-  private readonly pool = new Pool({
-    connectionString: required('DATABASE_URL'),
-    ssl: { rejectUnauthorized: true, ...(process.env.DATABASE_CA_CERT_PATH
+export const PG_POOL = Symbol('PG_POOL');
+export const RUNTIME_ROLE = 'messaging_b_runtime';
+
+/** Builds the worker's pool. TLS with certificate verification is mandatory outside local development. */
+export function createPool(): Pool {
+  const sslMode = process.env.DATABASE_SSL_MODE ?? 'verify-full';
+  if (sslMode !== 'verify-full' && sslMode !== 'disable') throw new Error('DATABASE_SSL_MODE must be verify-full or disable');
+  if (sslMode === 'disable' && process.env.NODE_ENV === 'production') {
+    throw new Error('DATABASE_SSL_MODE=disable is not allowed in production');
+  }
+  return new Pool({
+    connectionString: requiredEnv('DATABASE_URL'),
+    ssl: sslMode === 'disable' ? false : { rejectUnauthorized: true, ...(process.env.DATABASE_CA_CERT_PATH
       ? { ca: readFileSync(process.env.DATABASE_CA_CERT_PATH, 'utf8') } : {}) },
-    max: 10,
+    max: Number(process.env.DATABASE_POOL_MAX ?? 10),
     connectionTimeoutMillis: 3000,
     idleTimeoutMillis: 30000,
     statement_timeout: 5000,
   });
+}
+
+/**
+ * Runs `action` in one transaction with a transaction-local actor identity.
+ * A failed ROLLBACK means the connection is unusable; that error is reported to
+ * `onBrokenConnection` so the caller can destroy the client instead of pooling it.
+ */
+export async function runAsActor<T>(client: PoolClient, actorId: string,
+  action: (client: PoolClient) => Promise<T>, onBrokenConnection: (error: Error) => void): Promise<T> {
+  try {
+    await client.query('BEGIN');
+    // A transaction-scoped identity cannot bleed into a later pooled request.
+    await client.query("SELECT set_config('app.user_id', $1, true)", [actorId]);
+    const result = await action(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    try { await client.query('ROLLBACK'); }
+    catch (rollbackError) { onBrokenConnection(rollbackError instanceof Error ? rollbackError : new Error('Rollback failed')); }
+    throw error;
+  }
+}
+
+@Injectable()
+export class DatabaseSession implements OnModuleDestroy, OnModuleInit {
+  private readonly logger = new Logger(DatabaseSession.name);
+  private fastHistoryAvailable = false;
+
+  constructor(@Inject(PG_POOL) private readonly pool: Pool) {
+    // Without a listener, an idle client dropped by the server (pooler restart,
+    // network blip) emits an unhandled 'error' event and terminates the process.
+    this.pool.on('error', (error) => {
+      this.logger.error(`service=messaging-service stage=db.idle_client_error code=${dbCode(error)}`);
+    });
+  }
 
   async onModuleInit(): Promise<void> {
     const result = await this.pool.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
       'SELECT current_user AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user',
     );
     const role = result.rows[0];
-    if (!role || role.role_name !== 'messaging_b_runtime' || role.rolsuper || role.rolbypassrls) {
-      throw new Error('Messaging service requires the non-superuser messaging_b_runtime database role');
+    if (!role || role.role_name !== RUNTIME_ROLE || role.rolsuper || role.rolbypassrls) {
+      throw new Error(`Messaging service requires the non-superuser ${RUNTIME_ROLE} database role`);
     }
     const history = await this.pool.query<{ available: boolean }>(
       `SELECT pg_catalog.to_regprocedure(
@@ -32,38 +74,17 @@ export class DatabaseSession implements OnModuleDestroy, OnModuleInit {
       ) IS NOT NULL AS available`,
     );
     this.fastHistoryAvailable = history.rows[0]?.available === true;
-    this.logger.log('service=messaging-service stage=db.ready role=messaging_b_runtime');
+    this.logger.log(`service=messaging-service stage=db.ready role=${RUNTIME_ROLE}`);
     this.logger.log(`service=messaging-service stage=db.history_fast_path enabled=${this.fastHistoryAvailable}`);
-    this.cleanupExpiredRequests();
-    this.cleanupTimer = setInterval(() => this.cleanupExpiredRequests(), 60 * 60 * 1000);
-    this.cleanupTimer.unref();
-  }
-
-  private cleanupExpiredRequests(): void {
-    void this.pool.query("DELETE FROM internal.request_nonces WHERE expires_at < now() - interval '1 minute'")
-      .catch(() => { /* A failed cleanup never bypasses the uniqueness check. */ });
   }
 
   async onModuleDestroy(): Promise<void> {
-    if (this.cleanupTimer) clearInterval(this.cleanupTimer);
     await this.pool.end();
   }
 
-  async claimRequest(requestId: string, expiresAt: number): Promise<boolean> {
-    const started = performance.now();
-    try {
-      const inserted = await this.pool.query(
-        `INSERT INTO internal.request_nonces (request_id, expires_at)
-         VALUES ($1, $2) ON CONFLICT (request_id) DO NOTHING RETURNING request_id`,
-        [requestId, new Date(expiresAt)],
-      );
-      const accepted = inserted.rowCount === 1;
-      this.logger.log(`service=messaging-service stage=db.replay_claim requestId=${requestId} accepted=${accepted} durationMs=${Math.round(performance.now() - started)}`);
-      return accepted;
-    } catch (error) {
-      this.logger.warn(`service=messaging-service stage=db.replay_claim requestId=${requestId} status=error code=${dbCode(error)} durationMs=${Math.round(performance.now() - started)}`);
-      throw error;
-    }
+  /** A single statement outside any actor context (replay claims, maintenance). */
+  query<R extends QueryResultRow>(text: string, values: unknown[] = []) {
+    return this.pool.query<R>(text, values);
   }
 
   // A single server-side function call keeps actor identity transaction-local and
@@ -82,8 +103,9 @@ export class DatabaseSession implements OnModuleDestroy, OnModuleInit {
       this.logger.log(`${context} stage=db.done status=ok path=single_statement durationMs=${Math.round(performance.now() - started)}`);
       return result.rows;
     } catch (error) {
-      this.logger.warn(`${context} stage=db.done status=error path=single_statement code=${dbCode(error)} durationMs=${Math.round(performance.now() - started)}`);
-      throw error;
+      const mapped = toDomainError(error);
+      this.logger.warn(`${context} stage=db.done status=error path=single_statement code=${mapped?.code ?? dbCode(error)} sqlstate=${dbCode(error)} durationMs=${Math.round(performance.now() - started)}`);
+      throw mapped ?? error;
     }
   }
 
@@ -99,32 +121,18 @@ export class DatabaseSession implements OnModuleDestroy, OnModuleInit {
       this.logger.warn(`${context} stage=db.done status=error code=${dbCode(error)} durationMs=${Math.round(performance.now() - started)}`);
       throw error;
     }
+    let broken: Error | undefined;
     try {
-      await client.query('BEGIN');
-      // A transaction-scoped identity cannot bleed into a later pooled request.
-      await client.query("SELECT set_config('app.user_id', $1, true)", [actorId]);
-      const result = await action(client);
-      await client.query('COMMIT');
+      const result = await runAsActor(client, actorId, action, (error) => { broken = error; });
       this.logger.log(`${context} stage=db.done status=ok durationMs=${Math.round(performance.now() - started)}`);
       return result;
     } catch (error) {
-      await client.query('ROLLBACK');
-      this.logger.warn(`${context} stage=db.done status=error code=${dbCode(error)} durationMs=${Math.round(performance.now() - started)}`);
-      throw error;
+      const mapped = toDomainError(error);
+      this.logger.warn(`${context} stage=db.done status=error code=${mapped?.code ?? dbCode(error)} sqlstate=${dbCode(error)} durationMs=${Math.round(performance.now() - started)}`);
+      throw mapped ?? error;
     } finally {
-      client.release();
+      // Passing an error destroys the connection rather than returning it to the pool.
+      client.release(broken);
     }
   }
-
-}
-
-function required(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`${name} is required`);
-  return value;
-}
-
-function dbCode(error: unknown): string {
-  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-  return typeof code === 'string' && /^[A-Z0-9]{5}$/.test(code) ? code : 'unknown';
 }

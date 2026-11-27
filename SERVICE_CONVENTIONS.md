@@ -27,8 +27,8 @@ Current messaging worker map:
 - `transport/nats`: versioned subject handlers and signed replies.
 - `security`: A signature, audience, freshness, subject, Supabase JWT, actor, and replay validation.
 - `application`: fixed GraphQL schema, documents, and executor. It has no HTTP GraphQL endpoint.
-- `persistence/database-session.ts`: restricted pool, role check, replay claim, transaction-scoped actor ID, and DB lifecycle.
-- `persistence/conversation.repository.ts`, `care-contact.repository.ts`, and `message.repository.ts`: focused SQL operations. `messaging.repository.ts` is a small facade used by the GraphQL executor and guard.
+- `persistence/database-session.ts`: restricted pool, role check, transaction-scoped actor ID, and DB lifecycle. `persistence/replay.store.ts`: replay claims. `persistence/database-errors.ts`: SQLSTATE mapping.
+- `persistence/conversation.repository.ts`, `care-contact.repository.ts`, and `message.repository.ts`: focused SQL operations. The GraphQL executor depends on these repositories directly.
 - `domain`: operation error codes.
 
 ## Add a service

@@ -9,6 +9,21 @@ export const SUBJECTS = {
   listMessages: 'messaging.v1.query.history',
 } as const;
 
+/** Every request subject; the single source for NATS permissions and handlers. */
+export const REQUEST_SUBJECTS: readonly string[] = Object.values(SUBJECTS);
+
+/**
+ * Codes B's request guard returns before a request is verified (these replies
+ * are not signed because no trusted request exists yet). Only `UNAUTHENTICATED`
+ * is attributable to the end user; the others indicate a service-side fault.
+ */
+export const GUARD_REJECTION = {
+  invalidUser: 'UNAUTHENTICATED',
+  invalidService: 'INVALID_SERVICE_REQUEST',
+  replayed: 'REPLAYED_REQUEST',
+  unavailable: 'UNAVAILABLE',
+} as const;
+
 export const uuid = z.uuid();
 
 const baseRequest = z.object({

@@ -1,23 +1,37 @@
+# Local development stack. Production differences: NODE_ENV=production (which
+# requires NATS TLS), a reverse proxy in front of the gateway with TRUST_PROXY
+# set, and NATS/database reachable only over private networks.
 services:
   nats:
     image: nats:2.12-alpine
-    command: ["-c", "/etc/nats/nats.conf"]
+    command: ["-c", "/etc/nats/nats.conf", "-m", "8222"]
     volumes:
       - ./secrets/nats/server.conf:/etc/nats/nats.conf:ro
     ports:
       - "127.0.0.1:4222:4222"
-    networks: [internal]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8222/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [backend]
 
   api-gateway:
     build: .
     command: ["node", "apps/api-gateway/dist/main.js"]
-    depends_on: [nats]
+    depends_on:
+      nats:
+        condition: service_healthy
     environment:
       NODE_ENV: development
       HOST: 0.0.0.0
       PORT: 3001
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      THROTTLE_SESSION_PER_MINUTE: ${THROTTLE_SESSION_PER_MINUTE:-120}
+      THROTTLE_IP_PER_MINUTE: ${THROTTLE_IP_PER_MINUTE:-1200}
       NATS_URL: nats://nats:4222
       NATS_A_CREDENTIALS_FILE: /run/secrets/nats-gateway.creds
+      NATS_TLS_CA_FILE: ${NATS_TLS_CA_FILE:-}
       SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-}
       A_PRIVATE_KEY: ${A_PRIVATE_KEY}
@@ -28,28 +42,39 @@ services:
       - ./secrets/nats/gateway.creds:/run/secrets/nats-gateway.creds:ro
     ports:
       - "127.0.0.1:3001:3001"
-    networks: [internal]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/v1/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks: [backend]
 
   messaging-service:
     build: .
     command: ["node", "apps/messaging-service/dist/main.js"]
-    depends_on: [nats]
+    depends_on:
+      nats:
+        condition: service_healthy
     environment:
       NODE_ENV: development
       NATS_URL: nats://nats:4222
       NATS_B_CREDENTIALS_FILE: /run/secrets/nats-worker.creds
+      NATS_TLS_CA_FILE: ${NATS_TLS_CA_FILE:-}
       SUPABASE_URL: ${SUPABASE_URL}
       DATABASE_URL: ${DATABASE_URL}
-      DATABASE_CA_CERT_PATH: /app/secrets/db-ca.pem
+      DATABASE_CA_CERT_PATH: /run/secrets/db-ca.pem
       A_PUBLIC_KEY: ${A_PUBLIC_KEY}
       B_PRIVATE_KEY: ${B_PRIVATE_KEY}
       OBSERVE_B_APP_KEY: ${OBSERVE_B_APP_KEY:-}
       OBSERVE_B_APP_SECRET: ${OBSERVE_B_APP_SECRET:-}
     volumes:
-      - ./secrets/db-ca.pem:/app/secrets/db-ca.pem:ro
+      - ./secrets/db-ca.pem:/run/secrets/db-ca.pem:ro
       - ./secrets/nats/worker.creds:/run/secrets/nats-worker.creds:ro
-    networks: [internal]
+    restart: unless-stopped
+    networks: [backend]
 
 networks:
-  internal:
-    internal: false
+  # Not `internal: true`: the services need outbound access to Supabase.
+  backend: {}

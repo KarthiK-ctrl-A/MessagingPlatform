@@ -149,7 +149,6 @@
       ? 'Choose a conversation, or start one with an assigned patient.'
       : 'Choose a conversation, or start one with your currently assigned doctor.';
     byId('contactPicker').hidden = true;
-    byId('accountName').textContent = state.session?.email || 'Your account';
     renderContacts();
     renderConversations();
   }
@@ -240,12 +239,16 @@
   }
 
   async function loadMessages(mode) {
-    if (!state.selected || state.loadingMessages === state.selected.id) return;
+    if (!state.selected) return;
     const id = state.selected.id;
+    const busy = state.loadingMessages?.id === id ? state.loadingMessages.mode : null;
+    // A background poll never blocks a user action; only polls are skipped while busy.
+    if (busy && (mode === 'poll' || busy !== 'poll')) return;
+    const token = { id, mode };
     const oldHeight = byId('threadBody').scrollHeight;
     const oldTop = byId('threadBody').scrollTop;
     const nearBottom = oldHeight - oldTop - byId('threadBody').clientHeight < 120;
-    state.loadingMessages = id;
+    state.loadingMessages = token;
     try {
       const before = mode === 'older' && state.olderCursor ? `&before=${encodeURIComponent(state.olderCursor)}` : '';
       const page = await api(`/conversations/${encodeURIComponent(id)}/messages?limit=50${before}`);
@@ -258,7 +261,7 @@
       renderMessages(mode === 'initial' || (mode === 'poll' && nearBottom));
       if (mode === 'older') byId('threadBody').scrollTop = byId('threadBody').scrollHeight - oldHeight + oldTop;
     } catch (error) { if (mode !== 'poll') showToast(error.message); }
-    finally { if (state.loadingMessages === id) state.loadingMessages = null; }
+    finally { if (state.loadingMessages === token) state.loadingMessages = null; }
   }
 
   async function selectConversation(item) {

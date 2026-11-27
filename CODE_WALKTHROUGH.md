@@ -8,8 +8,8 @@ This map describes the current refactored source. The files under `dist/`, `node
 2. `apps/api-gateway/src/transport/http/conversations.controller.ts` validates REST input and chooses a messaging operation. `security/auth.guard.ts` verifies the Supabase access token. `transport/http/request-logging.ts` assigns the response's `X-Request-ID`.
 3. `apps/api-gateway/src/transport/nats/nats-gateway.service.ts` signs the operation packet and sends it to a subject from `packages/contracts`. It validates B's signed reply, correlation hash, freshness, and timeout.
 4. `apps/messaging-service/src/security/request.guard.ts` verifies A's signature, audience, time window, subject/operation match, user JWT, actor ID, and replay ID. `transport/nats/nats.controller.ts` handles the verified request and signs its response.
-5. `apps/messaging-service/src/application/graphql-executor.service.ts` runs a fixed GraphQL document from `graphql-documents.ts` against `graphql-schema.ts`. It dispatches to the repository facade; no GraphQL HTTP listener is exposed.
-6. `apps/messaging-service/src/persistence/database-session.ts` owns the restricted PostgreSQL pool, checks its role, claims replay IDs, and sets the actor ID for one transaction. `conversation.repository.ts`, `care-contact.repository.ts`, and `message.repository.ts` contain their respective SQL. `row-mappers.ts` maps database rows to response fields. PostgreSQL RLS checks current doctor/patient membership.
+5. `apps/messaging-service/src/application/graphql-executor.service.ts` runs a fixed GraphQL document from `graphql-documents.ts` against `graphql-schema.ts`. Documents are parsed and validated once at startup, and resolvers call the conversation, care-contact and message repositories directly with the verified actor ID; no GraphQL HTTP listener is exposed.
+6. `apps/messaging-service/src/persistence/database-session.ts` owns the restricted PostgreSQL pool (with an idle-error handler), checks its role, and sets the actor ID for one transaction; a connection whose ROLLBACK fails is destroyed instead of being reused. `database-errors.ts` maps SQLSTATEs (`MP400`/`MP403`/`MP404`, `42501`, `P0002`, ...) to typed domain errors. `replay.store.ts` claims request IDs and cleans up expired ones. `conversation.repository.ts`, `care-contact.repository.ts`, and `message.repository.ts` contain their respective SQL. `row-mappers.ts` maps database rows to response fields. PostgreSQL RLS checks current doctor/patient membership.
 
 ## File responsibilities
 
@@ -25,11 +25,12 @@ This map describes the current refactored source. The files under `dist/`, `node
 | `apps/messaging-service/src/application/graphql-schema.ts` | Internal GraphQL type and operation definitions. |
 | `apps/messaging-service/src/application/graphql-documents.ts` | Fixed, server-owned GraphQL queries and mutations. |
 | `apps/messaging-service/src/application/graphql-executor.service.ts` | Executes a fixed document and maps its result or domain error. |
-| `apps/messaging-service/src/persistence/database-session.ts` | Pool, role check, replay claims, transaction-scoped actor identity, lifecycle. |
+| `apps/messaging-service/src/persistence/database-session.ts` | Pool, role check, transaction-scoped actor identity, broken-connection handling, lifecycle. |
+| `apps/messaging-service/src/persistence/database-errors.ts` | SQLSTATE to domain-error mapping. |
+| `apps/messaging-service/src/persistence/replay.store.ts` | One-time request-ID claims shared by all worker replicas. |
 | `apps/messaging-service/src/persistence/conversation.repository.ts` | Open, create, and list conversations. |
 | `apps/messaging-service/src/persistence/care-contact.repository.ts` | Find current doctor or patient contacts by role. |
 | `apps/messaging-service/src/persistence/message.repository.ts` | Idempotent send and cursor-based history. |
-| `apps/messaging-service/src/persistence/messaging.repository.ts` | Small facade preserving the application and guard interface. |
 | `apps/messaging-service/src/persistence/row-mappers.ts` | Maps PostgreSQL column names and dates to API fields. |
 | `apps/messaging-service/src/domain/domain-error.ts` | Domain error code and message type. |
 | `packages/contracts/src/index.ts` | Allowed NATS subjects, strict packet schemas, cursor codec. |

@@ -4,7 +4,7 @@ import test from 'node:test';
 import { ClientProxy } from '@nestjs/microservices';
 import { of } from 'rxjs';
 import { signPacket, verifyPacket } from '@messaging/security';
-import { NatsGatewayService } from './nats-gateway.service';
+import { NatsGatewayService, transportError } from './nats-gateway.service';
 
 test('A signs its request and accepts only B signed reply with matching request ID', async () => {
   const a = generateKeyPairSync('ed25519');
@@ -39,4 +39,14 @@ test('A signs its request and accepts only B signed reply with matching request 
   await assert.rejects(new NatsGatewayService(wrongReply).execute('listConversations', { limit: 5 }, {
     id: 'a248c773-1cb0-4dad-b109-dfe48a094c00', accessToken: 'x'.repeat(20),
   }), /Invalid messaging service reply/);
+});
+
+test('worker rejections map to stable HTTP statuses', () => {
+  const timeout = Object.assign(new Error('Timeout has occurred'), { name: 'TimeoutError' });
+  assert.equal(transportError(timeout, 'none').getStatus(), 504);
+  assert.equal(transportError({ code: 'UNAUTHENTICATED' }, 'UNAUTHENTICATED').getStatus(), 401);
+  assert.equal(transportError({ code: 'INVALID_SERVICE_REQUEST' }, 'INVALID_SERVICE_REQUEST').getStatus(), 502);
+  assert.equal(transportError({ code: 'REPLAYED_REQUEST' }, 'REPLAYED_REQUEST').getStatus(), 502);
+  assert.equal(transportError({ code: 'UNAVAILABLE' }, 'UNAVAILABLE').getStatus(), 503);
+  assert.equal(transportError(new Error('no responders'), 'none').getStatus(), 503);
 });

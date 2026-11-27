@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { Controller, Logger, UseGuards } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import { SUBJECTS, type ResponseEnvelope, type SignedPacket } from '@messaging/contracts';
-import { signPacket } from '@messaging/security';
+import { requiredEnv, signPacket } from '@messaging/security';
 import { DomainError } from '../../domain/domain-error';
 import { GraphqlExecutorService } from '../../application/graphql-executor.service';
 import { SignedRequestGuard, VerifiedRequests } from '../../security/request.guard';
@@ -12,25 +12,18 @@ import { SignedRequestGuard, VerifiedRequests } from '../../security/request.gua
 export class NatsController {
   private readonly logger = new Logger(NatsController.name);
   constructor(private readonly verified: VerifiedRequests, private readonly graphql: GraphqlExecutorService) {}
-
   @MessagePattern(SUBJECTS.createConversation)
   create(@Payload() packet: SignedPacket) { return this.handle(packet); }
-
   @MessagePattern(SUBJECTS.openCurrentDoctor)
   openCurrentDoctor(@Payload() packet: SignedPacket) { return this.handle(packet); }
-
   @MessagePattern(SUBJECTS.careContacts)
   careContacts(@Payload() packet: SignedPacket) { return this.handle(packet); }
-
   @MessagePattern(SUBJECTS.listConversations)
   conversations(@Payload() packet: SignedPacket) { return this.handle(packet); }
-
   @MessagePattern(SUBJECTS.sendMessage)
   send(@Payload() packet: SignedPacket) { return this.handle(packet); }
-
   @MessagePattern(SUBJECTS.listMessages)
   history(@Payload() packet: SignedPacket) { return this.handle(packet); }
-
   private async handle(packet: SignedPacket): Promise<SignedPacket> {
     const request = this.verified.get(packet);
     const started = performance.now();
@@ -49,12 +42,6 @@ export class NatsController {
       response = { ...replyBase, ok: false, error: { code: known.code, message: known.message } };
       this.logger.warn(`${context} stage=handler.done status=error code=${known.code} durationMs=${Math.round(performance.now() - started)}`);
     }
-    return signPacket(response, required('B_PRIVATE_KEY'));
+    return signPacket(response, requiredEnv('B_PRIVATE_KEY'));
   }
-}
-
-function required(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`${name} is required`);
-  return value;
 }

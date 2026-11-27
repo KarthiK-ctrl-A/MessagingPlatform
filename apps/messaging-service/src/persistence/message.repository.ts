@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PoolClient } from 'pg';
 import { decodeCursor, encodeCursor } from '@messaging/contracts';
 import { DomainError } from '../domain/domain-error';
+import { toDomainError } from './database-errors';
 import { DatabaseSession } from './database-session';
 import { MessageRow, message } from './row-mappers';
 
@@ -14,7 +15,7 @@ export class MessageRepository {
     if (!found.rows[0]) throw new DomainError('NOT_FOUND', 'Conversation not found');
   }
 
-  async sendMessage(actorId: string, _token: string, conversationId: string, clientMessageId: string, content: string, requestId?: string) {
+  async sendMessage(actorId: string, conversationId: string, clientMessageId: string, content: string, requestId?: string) {
     return this.db.asActor(actorId, 'sendMessage', requestId, async (client) => {
       await this.assertMember(client, conversationId);
       const inserted = await client.query<MessageRow>(
@@ -49,10 +50,7 @@ export class MessageRepository {
       rows = await this.db.readMessagePage(actorId, conversationId, limit + 1,
         cursor?.createdAt ?? null, cursor?.id ?? null, requestId);
     } catch (error) {
-      if (error && typeof error === 'object' && 'code' in error && error.code === 'P0002') {
-        throw new DomainError('NOT_FOUND', 'Conversation not found');
-      }
-      throw error;
+      throw toDomainError(error) ?? error;
     }
     if (rows !== null) return this.page(rows, limit);
     return this.db.asActor(actorId, 'listMessages', requestId, async (client) => {

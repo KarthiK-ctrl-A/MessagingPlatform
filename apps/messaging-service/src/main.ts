@@ -1,22 +1,19 @@
 import 'reflect-metadata';
-import { readFileSync } from 'node:fs';
-import { credsAuthenticator } from '@nats-io/transport-node';
 import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
+import { assertServiceKeys, natsConnectionOptions, requiredEnv } from '@messaging/security';
 import { AppModule } from './app.module';
 import { ObserveInstrument } from './observe';
 
 async function main() {
-  for (const key of ['A_PUBLIC_KEY', 'B_PRIVATE_KEY', 'SUPABASE_URL', 'DATABASE_URL', 'NATS_B_CREDENTIALS_FILE']) {
-    if (!process.env[key]) throw new Error(`${key} is required`);
-  }
+  for (const key of ['SUPABASE_URL', 'DATABASE_URL']) requiredEnv(key);
+  assertServiceKeys('B_PRIVATE_KEY', 'A_PUBLIC_KEY');
   const app = await NestFactory.createMicroservice<MicroserviceOptions>(AppModule, {
     instrument: ObserveInstrument,
     transport: Transport.NATS,
     options: {
-      servers: [process.env.NATS_URL ?? 'nats://127.0.0.1:4222'],
-      authenticator: credsAuthenticator(readFileSync(process.env.NATS_B_CREDENTIALS_FILE!)),
+      ...natsConnectionOptions('NATS_B_CREDENTIALS_FILE'),
       queue: 'messaging-workers',
       gracefulShutdown: true,
     },
@@ -26,4 +23,7 @@ async function main() {
   new Logger('WorkerBootstrap').log('service=messaging-service stage=ready transport=nats queue=messaging-workers');
 }
 
-void main();
+main().catch((error: unknown) => {
+  new Logger('WorkerBootstrap').error(`service=messaging-service stage=startup_failed error=${error instanceof Error ? error.message : 'unknown'}`);
+  process.exit(1);
+});

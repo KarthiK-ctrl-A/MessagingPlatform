@@ -14,18 +14,17 @@
     "keys:generate": "node scripts/generate-keys.mjs",
     "nats:bootstrap": "node scripts/bootstrap-nats.mjs",
     "nats:verify": "node scripts/verify-nats-auth.mjs",
-    "service:new": "node scripts/new-service.mjs"
+    "service:new": "node scripts/new-service.mjs",
+    "test:integration": "node scripts/integration-tests.mjs"
   },
   "devDependencies": {
     "@nats-io/jwt": "^0.1.0",
     "@nats-io/nkeys": "^2.1.0",
+    "@nats-io/transport-node": "^3.0.0",
     "@types/node": "^24.0.0",
     "typescript": "^6.0.2"
   },
   "engines": {
     "node": ">=24"
-  },
-  "dependencies": {
-    "@nestjs/observe": "^0.3.29"
   }
 }

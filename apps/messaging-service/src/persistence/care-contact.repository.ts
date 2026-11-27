@@ -20,7 +20,7 @@ export class CareContactRepository {
           `SELECT p.doctor_id AS user_id, d.full_name
            FROM public.patients p
            JOIN public.profiles d ON d.id=p.doctor_id
-           WHERE p.user_id=$1 LIMIT 1`, [actorId],
+           WHERE p.user_id=$1 ORDER BY p.id LIMIT 1`, [actorId],
         )
         : await client.query<{ user_id: string; full_name: string }>(
           `SELECT p.user_id, patient.full_name
@@ -32,5 +32,4 @@ export class CareContactRepository {
       return { role, contacts: result.rows.map((row) => ({ userId: row.user_id, fullName: row.full_name })) };
     });
   }
-
 }

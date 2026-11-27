@@ -36,7 +36,7 @@ The browser sends the email/password login directly to Supabase Auth, so that lo
 
 Apply `supabase/migrations/20261127_fast_message_history.sql` in the existing Supabase project's SQL Editor as the migration owner, then restart `messaging-service`. Its startup log should say `stage=db.history_fast_path enabled=true`. A history read then sends one database statement that sets a transaction-local actor, verifies current conversation membership through RLS, and fetches one indexed message page. The replay claim remains a separate database round trip. The old multi-statement read is retained as a fallback until the migration is installed. Compare `operation=listMessages stage=db.done durationMs=...` before and after; the REST and NATS APIs do not change. The migration creates a function only and does not rewrite the message table or add a duplicate index.
 
-Live push, an outbox/JetStream relay, NATS TLS, cross-network deployment manifests, and production observability are subsequent phases. The local broker now uses operator/account/user JWTs and NKeys, but still sends traffic without TLS on the local Compose network; **do not deploy it across networks**.
+Live push, an outbox/JetStream relay, cross-network deployment manifests, and production observability are subsequent phases. The local broker now uses operator/account/user JWTs and NKeys, and supports TLS (see *NATS TLS* below); the default local Compose network is still plaintext, so **do not deploy it across networks without enabling TLS**. With `NODE_ENV=production` both services refuse to start unless `NATS_TLS_CA_FILE` is set.
 
 ### Current security status
 
@@ -51,7 +51,7 @@ B refuses to run unless its database login is the non-superuser `messaging_b_run
 ## Prerequisites and setup
 
 1. Install Node.js 24+, npm, and Docker Desktop (or another Docker engine). Use the existing ClinicalWebApp Supabase project with asymmetric Auth JWT signing keys, a patient profile/row, and their assigned doctor. Keep its Data API and Realtime enabled.
-2. Apply the ClinicalWebApp migrations first, including its message RLS policy. Then apply `supabase/migrations/20261124_clinical_messaging.sql` once as the migration owner, followed by `supabase/migrations/20261124_messaging_portals.sql` and `supabase/migrations/20261127_fast_message_history.sql`. The first extends `public.messages`, backfills existing messages into conversations, and adds a trigger so the clinical app's old insert shape keeps working. The second adds replay-table RLS policies and limited access to current care-contact names. The third speeds up history reads without changing tables. Do **not** apply the removed standalone messaging migration. The first migration creates a new restricted `messaging_b_runtime` role and leaves any pre-existing `messaging_app` role untouched. Set a strong password for `messaging_b_runtime` **outside source control**, restrict database network access to B's egress, use a session-pooler connection string for that role, and download the database CA certificate. Back up the database and plan a maintenance window if `public.messages` is large: backfill and constraints take locks.
+2. Apply the ClinicalWebApp migrations first, including its message RLS policy. Then apply `supabase/migrations/20261124_clinical_messaging.sql` once as the migration owner, followed by `supabase/migrations/20261124_messaging_portals.sql`, `supabase/migrations/20261127_fast_message_history.sql`, and `supabase/migrations/20261128_error_codes.sql`. The first extends `public.messages`, backfills existing messages into conversations, and adds a trigger so the clinical app's old insert shape keeps working. The second adds replay-table RLS policies and limited access to current care-contact names. The third speeds up history reads without changing tables. The fourth gives SQL business-rule errors stable SQLSTATE codes (`MP400`/`MP403`/`MP404`) so B returns 400/403/404 instead of 503; B also understands the pre-migration messages, so the order of deploying B and this migration does not matter. **Before applying the first two migrations**, check whether `public.patients` and `public.profiles` already have RLS enabled (`SELECT relname, relrowsecurity FROM pg_class WHERE relname IN ('patients','profiles')`): enabling RLS on a table that the clinical app reads without policies would block those reads. Do **not** apply the removed standalone messaging migration. The first migration creates a new restricted `messaging_b_runtime` role and leaves any pre-existing `messaging_app` role untouched. Set a strong password for `messaging_b_runtime` **outside source control**, restrict database network access to B's egress, use a session-pooler connection string for that role, and download the database CA certificate. Back up the database and plan a maintenance window if `public.messages` is large: backfill and constraints take locks.
 3. Run `npm install`, `npm run build`, and `npm run nats:bootstrap` in this repository. The bootstrap runs once and refuses to overwrite existing identities. Keep `secrets/nats/operator.seed`, `account.seed`, and `system.seed` in a trusted offline store for production; only `gateway.creds` and `worker.creds` are mounted to their respective services. Never commit or share any `.creds` or `.seed` file.
 4. Copy `.env.example` to `.env`. Set `SUPABASE_URL` to the clinical project's URL, `SUPABASE_PUBLISHABLE_KEY` to its browser-safe publishable key, and `DATABASE_URL` to the **restricted `messaging_b_runtime` role**, never `postgres`. Put the database CA certificate at `secrets/db-ca.pem`. Run `npm run keys:generate` and paste the four application signing-key values into `.env`. For host-based runs, set `NATS_A_CREDENTIALS_FILE` and `NATS_B_CREDENTIALS_FILE` to the generated files. Compose mounts those files at fixed container paths. The Supabase JWT, NATS credentials, and A/B packet-signing keys are distinct identities.
 5. Start Docker Desktop or Podman, then run `docker compose --env-file .env up --build` or `podman compose --env-file .env up --build`. The web interface is at `http://127.0.0.1:3001/` and A's REST API is at `http://127.0.0.1:3001/v1`; B has no public HTTP endpoint. NATS port 4222 is mapped only to host loopback for local debugging. After bootstrap, a connection without a valid user JWT and matching NKey seed is rejected. Run `npm run nats:verify` on the host to check A/B request-reply and rejection of anonymous and old password connections.
@@ -61,6 +61,38 @@ If an earlier SQL Editor run failed inside `BEGIN`, run `ROLLBACK;` in that sess
 For host-based development, start the NATS service with `docker compose up nats`, then run `npm run start:b` and `npm run start:a` in separate terminals after building.
 
 Obtain user access tokens with Supabase Auth for the two test accounts. All messaging calls go to A with `Authorization: Bearer <access-token>`.
+
+## Configuration reference (added settings)
+
+| Variable | Service | Default | Purpose |
+| --- | --- | --- | --- |
+| `TRUST_PROXY` | gateway | `false` | Express `trust proxy`: hop count (`1`), `true`, or proxy addresses. Set it to your load balancer so per-IP limits see real client addresses. |
+| `THROTTLE_SESSION_PER_MINUTE` | gateway | `120` | Requests per minute per signed-in session (bearer token). |
+| `THROTTLE_IP_PER_MINUTE` | gateway | `1200` | Flood limit per client IP; sized so a clinic behind one NAT address is not throttled. |
+| `NATS_TLS_CA_FILE` | both | unset | CA used to verify the NATS broker. Required when `NODE_ENV=production` or `NATS_REQUIRE_TLS=true`. |
+| `NATS_TLS_CERT_FILE` / `NATS_TLS_KEY_FILE` | both | unset | Optional client certificate for mutual TLS. |
+| `DATABASE_SSL_MODE` | worker | `verify-full` | `disable` is allowed only outside production (local Postgres, integration tests). |
+| `DATABASE_POOL_MAX` | worker | `10` | Database pool size per worker replica. |
+
+The gateway exposes `GET /v1/health` (unauthenticated, not rate limited). It returns 503 while the NATS connection is down; Compose uses it as the container health check.
+
+### NATS TLS
+
+1. Create a CA and a broker certificate whose subject alternative names match the host in `NATS_URL` (for Compose: `DNS:nats`).
+2. Run the bootstrap with the broker-side paths: `NATS_SERVER_TLS_CERT=/etc/nats/tls/server-cert.pem NATS_SERVER_TLS_KEY=/etc/nats/tls/server-key.pem npm run nats:bootstrap`, and mount the certificate directory into the `nats` container at `/etc/nats/tls`.
+3. Use `tls://` in `NATS_URL` and set `NATS_TLS_CA_FILE` for both services (and for `npm run nats:verify`).
+
+## Tests
+
+- `npm test` runs the unit tests of every workspace.
+- `npm run test:integration` also runs the database integration tests. They apply the real migrations to a disposable PostgreSQL server and check RLS, triggers, idempotency, pagination, reassignment, replay claims and index use. They need a **disposable** superuser URL because they create and drop their own database and the `messaging_b_runtime` role:
+
+  ```sh
+  docker run --rm -d -p 54329:5432 -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16
+  TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:54329/postgres npm run test:integration
+  ```
+
+CI (`.github/workflows/ci.yml`) runs `npm audit`, the build, unit and integration tests, and a Docker image build on every push and pull request.
 
 ## Simple web interface
 
@@ -110,7 +142,7 @@ Run `npm run service:new -- <service-name>` to create the same NestJS service la
 
 ## Production security work
 
-Use private connectivity or a VPN to the NATS hub and NATS TLS with server verification. Move the issuer seeds to a managed offline store; use a full account resolver, scoped signing keys, expiring user credentials, revocation, and a tested rotation process. Give each A instance its own NATS user identity and reply inbox prefix. An attacker holding one instance's credentials can still read that instance's replies. Run B without public ingress. Preserve and audit the clinical Data API/RLS policies and restrict database ingress to B. B must verify the JWT **before** it sets `app.user_id` in a database transaction; the database role itself can set that value, so protecting its credential is essential. Configure the API gateway's trusted-proxy setting only for the actual load balancer before relying on IP-based rate limits. Add signing-key IDs and rotation, event outbox/JetStream, audit trails, and production observability before handling sensitive data.
+Use private connectivity or a VPN to the NATS hub and NATS TLS with server verification. Move the issuer seeds to a managed offline store; use a full account resolver, scoped signing keys, expiring user credentials, revocation, and a tested rotation process. Give each A instance its own NATS user identity and reply inbox prefix. An attacker holding one instance's credentials can still read that instance's replies. Run B without public ingress. Preserve and audit the clinical Data API/RLS policies and restrict database ingress to B. B must verify the JWT **before** it sets `app.user_id` in a database transaction; the database role itself can set that value, so protecting its credential is essential. Set `TRUST_PROXY` only for the actual load balancer; per-IP limits are a flood guard, and the primary limit is per session. Add signing-key IDs and rotation, event outbox/JetStream, audit trails, and production observability before handling sensitive data.
 
 See `ARCHITECTURE.md` for the full deployment topology, trust model, and phased plan.
 

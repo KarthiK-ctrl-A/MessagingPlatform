@@ -5,8 +5,11 @@ import { connect, credsAuthenticator } from '@nats-io/transport-node';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const server = process.env.NATS_URL ?? 'nats://127.0.0.1:4222';
+// When the broker has TLS enabled, verify it against the configured CA.
+const tls = process.env.NATS_TLS_CA_FILE ? { tls: { caFile: process.env.NATS_TLS_CA_FILE } } : {};
 const options = async (name) => ({
   servers: server,
+  ...tls,
   authenticator: credsAuthenticator(await readFile(resolve(root, `secrets/nats/${name}.creds`))),
   ...(name === 'gateway' ? { inboxPrefix: '_INBOX.gateway' } : {}),
   timeout: 2000,
@@ -36,7 +39,7 @@ try {
   for (const credentials of [{}, { user: 'gateway', pass: 'local-gateway-only' }]) {
     let rejected = false;
     try {
-      const connection = await connect({ servers: server, ...credentials, timeout: 1000, maxReconnectAttempts: 0 });
+      const connection = await connect({ servers: server, ...tls, ...credentials, timeout: 1000, maxReconnectAttempts: 0 });
       await connection.close();
     } catch { rejected = true; }
     if (!rejected) throw new Error('Broker accepted an unauthenticated or legacy-password connection');

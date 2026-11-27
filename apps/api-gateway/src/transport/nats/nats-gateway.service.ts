@@ -1,22 +1,32 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { BadGatewayException, GatewayTimeoutException, HttpException, Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
+import { BadGatewayException, GatewayTimeoutException, HttpException, Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ClientProxy } from '@nestjs/microservices';
 import { firstValueFrom, Subscription, timeout } from 'rxjs';
-import { requestSchema, responseSchema, SUBJECTS, type Operation, type RequestEnvelope, type SignedPacket } from '@messaging/contracts';
-import { assertFresh, signPacket, verifyPacket } from '@messaging/security';
+import { GUARD_REJECTION, requestSchema, responseSchema, SUBJECTS, type Operation, type RequestEnvelope, type SignedPacket } from '@messaging/contracts';
+import { assertFresh, requiredEnv, signPacket, verifyPacket } from '@messaging/security';
 import type { Actor } from '../../security/auth.guard';
 
 @Injectable()
 export class NatsGatewayService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(NatsGatewayService.name);
   private statusSubscription?: Subscription;
+  private status = 'pending';
   constructor(@Inject('MESSAGING_CLIENT') private readonly client: ClientProxy) {}
 
   onModuleInit(): void {
     this.statusSubscription = this.client.status.subscribe((status) => {
+      this.status = String(status);
       this.logger.log(`service=api-gateway stage=nats.connection status=${status}`);
     });
+    // Connect eagerly so the first user request does not pay the TLS/auth handshake;
+    // a failure here is retried by the client on the next request.
+    this.client.connect().catch(() => {
+      this.logger.warn('service=api-gateway stage=nats.connection status=initial_connect_failed');
+    });
   }
+
+  /** Latest broker connection status reported by the NestJS NATS client. */
+  connectionStatus(): string { return this.status; }
 
   onModuleDestroy(): void { this.statusSubscription?.unsubscribe(); }
 
@@ -27,7 +37,7 @@ export class NatsGatewayService implements OnModuleInit, OnModuleDestroy {
       version: 1, audience: 'messaging-service', requestId: actor.requestId ?? randomUUID(), issuedAt: now, expiresAt: now + 15000,
       operation, variables, actorId: actor.id, userJwt: actor.accessToken,
     }) as RequestEnvelope;
-    const packet = signPacket(envelope, required('A_PRIVATE_KEY'));
+    const packet = signPacket(envelope, requiredEnv('A_PRIVATE_KEY'));
     const requestHash = createHash('sha256').update(packet.payload).digest('base64url');
     const context = `service=api-gateway requestId=${envelope.requestId} operation=${operation} subject=${SUBJECTS[operation]}`;
     this.logger.log(`${context} stage=nats.publish`);
@@ -39,13 +49,11 @@ export class NatsGatewayService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'none';
       this.logger.warn(`${context} stage=nats.transport_error errorType=${error instanceof Error ? error.name : typeof error} code=${code} durationMs=${Math.round(performance.now() - started)}`);
-      if (error instanceof Error && error.name === 'TimeoutError') throw new GatewayTimeoutException('Messaging service timed out');
-      if (code === 'UNAUTHENTICATED') throw new BadGatewayException('Messaging service rejected request');
-      throw new ServiceUnavailableException('Messaging service unavailable');
+      throw transportError(error, code);
     }
     let reply;
     try {
-      reply = responseSchema.parse(verifyPacket(signedReply, required('B_PUBLIC_KEY')));
+      reply = responseSchema.parse(verifyPacket(signedReply, requiredEnv('B_PUBLIC_KEY')));
       if (reply.requestId !== envelope.requestId) throw new Error('Reply correlation mismatch');
       if (reply.requestHash !== requestHash) throw new Error('Reply request hash mismatch');
       assertFresh(reply.issuedAt, reply.expiresAt);
@@ -63,8 +71,16 @@ export class NatsGatewayService implements OnModuleInit, OnModuleDestroy {
   }
 }
 
-function required(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`${name} is required`);
-  return value;
+/**
+ * Maps a transport-level failure (no signed reply) to an HTTP error. These replies
+ * come from B's guard before verification and are not signed, so only the
+ * user-session code is surfaced as 401; everything else is a gateway-side fault.
+ */
+export function transportError(error: unknown, code: string): HttpException {
+  if (error instanceof Error && error.name === 'TimeoutError') return new GatewayTimeoutException('Messaging service timed out');
+  if (code === GUARD_REJECTION.invalidUser) return new UnauthorizedException('Session is no longer valid');
+  if (code === GUARD_REJECTION.invalidService || code === GUARD_REJECTION.replayed) {
+    return new BadGatewayException('Messaging service rejected request');
+  }
+  return new ServiceUnavailableException('Messaging service unavailable');
 }

@@ -20,7 +20,7 @@ write('package.json', JSON.stringify({
   dependencies: {
     '@messaging/contracts': '0.1.0', '@messaging/security': '0.1.0',
     '@nestjs/common': '^12.0.1', '@nestjs/core': '^12.0.1',
-    '@nestjs/microservices': '^12.0.1', '@nats-io/transport-node': '^3.0.0',
+    '@nestjs/microservices': '^12.0.1',
     'reflect-metadata': '^0.2.2', 'rxjs': '^7.8.1',
   },
 }, null, 2) + '\n');
@@ -44,30 +44,23 @@ export class DenyAllGuard implements CanActivate {
 }
 `);
 write('src/main.ts', `import 'reflect-metadata';
-import { readFileSync } from 'node:fs';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
-import { credsAuthenticator } from '@nats-io/transport-node';
+import { natsConnectionOptions } from '@messaging/security';
 import { AppModule } from './app.module';
 
 async function main() {
-  const credentials = process.env.${variable};
-  if (!credentials) throw new Error('${variable} is required');
   const app = await NestFactory.createMicroservice<MicroserviceOptions>(AppModule, {
     transport: Transport.NATS,
-    options: {
-      servers: [process.env.NATS_URL ?? 'nats://127.0.0.1:4222'],
-      authenticator: credsAuthenticator(readFileSync(credentials)),
-      queue: '${name}-workers', gracefulShutdown: true,
-    },
+    options: { ...natsConnectionOptions('${variable}'), queue: '${name}-workers', gracefulShutdown: true },
   });
   app.enableShutdownHooks();
   await app.listen();
   new Logger('WorkerBootstrap').log('service=${name} stage=ready transport=nats queue=${name}-workers');
 }
 
-void main();
+main().catch((error) => { new Logger('WorkerBootstrap').error(String(error)); process.exit(1); });
 `);
 for (const path of ['src/application/.gitkeep', 'src/persistence/.gitkeep', 'src/transport/nats/.gitkeep']) write(path, '');
 write('README.md', `# ${name}

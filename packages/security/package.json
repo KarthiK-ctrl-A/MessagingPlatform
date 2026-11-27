@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@messaging/contracts": "0.1.0",
-    "jose": "^6.0.0"
+    "jose": "^6.0.0",
+    "@nats-io/transport-node": "^3.0.0"
   }
 }

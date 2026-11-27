@@ -1,4 +1,6 @@
+import { existsSync } from 'node:fs';
 import { mkdir, readdir, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { encodeAccount, encodeOperator, encodeUser, fmtCreds } from '@nats-io/jwt';
@@ -16,15 +18,12 @@ const account = createAccount();
 const system = createAccount();
 const gateway = createUser();
 const worker = createUser();
-const requestSubjects = [
-  'messaging.v1.query.care-contacts',
-  'messaging.v1.command.create-conversation',
-  'messaging.v1.command.open-current-doctor',
-  'messaging.v1.query.conversations',
-  'messaging.v1.command.send',
-  'messaging.v1.query.history',
-  'messaging.v1.query.auth-probe',
-];
+// Subjects come from @messaging/contracts so broker permissions cannot drift from
+// the handlers. `auth-probe` is used only by scripts/verify-nats-auth.mjs.
+const contractsPath = resolve(repo, 'packages/contracts/dist/index.js');
+if (!existsSync(contractsPath)) throw new Error('Run `npm run build` before `npm run nats:bootstrap`');
+const { REQUEST_SUBJECTS } = createRequire(import.meta.url)(contractsPath);
+const requestSubjects = [...REQUEST_SUBJECTS, 'messaging.v1.query.auth-probe'];
 const accountLimits = {
   imports: -1, exports: -1, wildcards: true, conn: -1, leaf: -1,
   data: -1, payload: 65536, subs: -1, disallow_bearer: true,
@@ -45,8 +44,13 @@ const workerJwt = await encodeUser('worker', worker, account, {
   payload: 65536,
 });
 
-const serverConfig = `# Local JWT/NKey broker. Add TLS and private connectivity before cross-network deployment.\n` +
-  `server_name: messaging-local\nlisten: 0.0.0.0:4222\nmax_payload: 65536\n` +
+// Optional broker TLS: pass the certificate/key paths as the broker will see them
+// (for Compose, under /etc/nats/tls). Clients then set NATS_TLS_CA_FILE.
+const { NATS_SERVER_TLS_CERT: tlsCert, NATS_SERVER_TLS_KEY: tlsKey } = process.env;
+if (Boolean(tlsCert) !== Boolean(tlsKey)) throw new Error('Set both NATS_SERVER_TLS_CERT and NATS_SERVER_TLS_KEY, or neither');
+const tlsBlock = tlsCert ? `tls {\n  cert_file: "${tlsCert}"\n  key_file: "${tlsKey}"\n  timeout: 2\n}\n` : '';
+const serverConfig = `# Local JWT/NKey broker. ${tlsCert ? 'TLS enabled.' : 'Plaintext: enable TLS before any cross-network deployment.'}\n` +
+  `server_name: messaging-local\nlisten: 0.0.0.0:4222\nmax_payload: 65536\n${tlsBlock}` +
   `operator: ${operatorJwt}\nsystem_account: ${system.getPublicKey()}\nresolver: MEMORY\n` +
   `resolver_preload {\n  ${account.getPublicKey()}: ${accountJwt}\n  ${system.getPublicKey()}: ${systemJwt}\n}\n`;
 
