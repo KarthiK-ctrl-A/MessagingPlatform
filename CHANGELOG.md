@@ -1,5 +1,63 @@
 # Changelog
 
+## 2026-11-27 (b): Live delivery replaces polling
+
+### What changed
+- **Push instead of poll.** The browser keeps one server-sent-events stream (`GET /v1/events`) and fetches only new messages when notified.
+  - Idle tabs make no requests (measured: 0 requests in 30 s, previously 6).
+  - Delivery took 15–80 ms in end-to-end tests.
+- **Transactional outbox.** Migration `20261129_message_events.sql` adds `internal.message_outbox` and an `AFTER INSERT` trigger on `public.messages`.
+  - Messages written directly by the clinical app produce events too.
+  - Rolled-back inserts produce none.
+- **Relay in the worker.** It is woken by `LISTEN/NOTIFY` and claims rows with `FOR UPDATE SKIP LOCKED`, so it is safe with many replicas. It signs each event with the worker's key and marks rows published only after the broker has accepted them.
+  - A 10 s safety check covers missed notifications; it is a single index probe when idle.
+- **Gateway event hub.** It verifies each event's signature, schema and freshness, de-duplicates by `eventId`, and routes events only to the two participants.
+  - Stream limits are configurable per user and per instance.
+  - Heartbeats keep proxies from closing idle streams.
+  - A stream ends when the access token expires.
+  - `/v1/health` reports the event subscription status and the number of open streams.
+- **Events carry IDs only**, never message content; the content is read through the normal authorised history endpoint.
+- **`after` cursor** on message history (`latestCursor` in every page), plus a single-statement SQL function for it.
+- **Web client.**
+  - Reads the stream with `fetch`, so the token goes in a header, not the URL.
+  - Reconnects with exponential backoff and jitter.
+  - Fills gaps after reconnecting and detects dead streams.
+  - Marks conversations with new messages as unread.
+  - Falls back to a 15 s poll only while disconnected.
+
+### Fixed along the way
+- **Gateway no longer crashes on old NATS credentials.** If the gateway's NATS identity lacks event permission, REST keeps working and `/v1/events` returns 503, so browsers poll every 15 s. `/v1/health` reports `"events":"forbidden"` and the log names the fix. The streams also close on a broker disconnect, so clients reconnect and fill any gap.
+- **`nats:update-permissions` safeguards.** It refuses to run against an outdated `packages/contracts/dist`, and rewrites the `.creds` files in place so Docker bind mounts pick them up.
+- **Cursor precision.** Cursors and timestamps were truncated to milliseconds, while PostgreSQL stores microseconds. Paging back through several messages written within the same millisecond could skip some of them. Timestamps now keep microseconds (`...30.022123Z`).
+- **NATS permissions were wider than intended.** The worker identity had no publish restriction (an empty allow list means "everything"), so it could publish request subjects. It may now publish only `messaging.v1.event.>`; replies still work through its response permission.
+
+### Upgrade
+1. Apply `supabase/migrations/20261129_message_events.sql`.
+2. Run `npm run build && npm run nats:update-permissions` (keeps existing keys), then recreate both services (`docker compose up -d --force-recreate api-gateway messaging-service`). `npm run nats:verify` confirms event delivery.
+3. Ensure `DATABASE_URL` uses a session-mode connection (Supabase session pooler, port 5432) so `LISTEN` works.
+4. Behind a load balancer, set its idle timeout above `EVENT_HEARTBEAT_MS` (25 s).
+
+### Tests
+- **Unit tests: 26 → 38.** New coverage:
+  - Event routing, de-duplication and connection limits.
+  - Signature and freshness checks.
+  - SSE framing and token-expiry close.
+  - Relay wake-up batching.
+  - Timestamp precision.
+  - Contract rules.
+- **Integration tests: 10 → 16.** New coverage:
+  - Microsecond paging.
+  - `after` cursor.
+  - Exactly-one outbox row, including clinical-app inserts and rollbacks.
+  - Publish failure leaving rows pending.
+  - Three concurrent relays never publishing the same event twice.
+  - `NOTIFY` on commit.
+- **End to end:** real NATS over TLS and two browsers.
+  - Unread marker, delivery latency, and clinical-app insert delivery.
+  - Zero idle requests.
+  - Gateway restart with gap fill.
+  - A doctor outside the conversation receiving nothing.
+
 ## 2026-11-27: Architecture review fixes
 
 ### Robustness

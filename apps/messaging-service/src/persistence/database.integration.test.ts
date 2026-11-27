@@ -16,6 +16,24 @@ import { ConversationRepository } from './conversation.repository';
 import { CareContactRepository } from './care-contact.repository';
 import { MessageRepository } from './message.repository';
 import { ReplayStore } from './replay.store';
+import { preciseTimestampTypes } from './timestamps';
+import { generateKeyPairSync } from 'node:crypto';
+import { EVENT_SUBJECTS, messageCreatedEventSchema } from '@messaging/contracts';
+import { verifyPacket } from '@messaging/security';
+import { OutboxRelay } from '../events/outbox-relay.service';
+import type { EventPublisher } from '../events/event-publisher';
+
+const signing = generateKeyPairSync('ed25519');
+process.env.B_PRIVATE_KEY = signing.privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64');
+const bPublicKey = signing.publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
+
+/** Collects published packets; can be told to fail to exercise retry behaviour. */
+class RecordingPublisher implements EventPublisher {
+  readonly published: { subject: string; packet: object }[] = [];
+  fail = false;
+  async publish(subject: string, packet: object) { this.published.push({ subject, packet }); }
+  async flush() { if (this.fail) throw new Error('broker unavailable'); }
+}
 
 const adminUrl = process.env.TEST_DATABASE_URL;
 const repoRoot = resolve(__dirname, '..', '..', '..', '..');
@@ -35,6 +53,7 @@ describe('database integration (migrations, RLS, triggers)', { skip: !adminUrl &
   let contacts: CareContactRepository;
   let messages: MessageRepository;
   let patient1Row: string;
+  let runtimeUrl: string;
 
   before(async () => {
     const server = new Client({ connectionString: adminUrl });
@@ -70,7 +89,8 @@ describe('database integration (migrations, RLS, triggers)', { skip: !adminUrl &
 
     url.username = RUNTIME_ROLE;
     url.password = runtimePassword;
-    pool = new Pool({ connectionString: url.toString(), max: 4 });
+    pool = new Pool({ connectionString: url.toString(), max: 6, types: preciseTimestampTypes });
+    runtimeUrl = url.toString();
     db = new DatabaseSession(pool);
     await db.onModuleInit();
     conversations = new ConversationRepository(db);
@@ -135,9 +155,9 @@ describe('database integration (migrations, RLS, triggers)', { skip: !adminUrl &
     const first = await messages.listMessages(patient1, conversation.id, 2);
     assert.deepEqual(first.items.map((item) => item.content), ['page 5', 'page 4']);
     assert.ok(first.nextCursor);
-    const second = await messages.listMessages(patient1, conversation.id, 2, first.nextCursor!);
+    const second = await messages.listMessages(patient1, conversation.id, 2, { before: first.nextCursor! });
     assert.deepEqual(second.items.map((item) => item.content), ['page 3', 'page 2']);
-    await assert.rejects(messages.listMessages(patient1, conversation.id, 2, 'not-a-cursor'), { code: 'VALIDATION' });
+    await assert.rejects(messages.listMessages(patient1, conversation.id, 2, { before: 'not-a-cursor' }), { code: 'VALIDATION' });
   });
 
   test('reassigning the patient removes the previous doctor\'s access', async () => {
@@ -173,5 +193,105 @@ describe('database integration (migrations, RLS, triggers)', { skip: !adminUrl &
       assert.match(text, /conversations_user_(low|high)_time/);
       await client.query('ROLLBACK');
     } finally { client.release(); }
+  });
+  test('timestamps keep microseconds so rows in the same millisecond are never skipped', async () => {
+    const conversation = await conversations.createConversation(doctor2, patient2);
+    // Five messages inside one millisecond, as a bulk import or a busy clinic could produce.
+    await admin.query(`INSERT INTO public.messages (conversation_id, sender_id, client_message_id, content, created_at)
+      SELECT $1, $2, gen_random_uuid(), 'burst ' || n, timestamptz '2030-01-01 00:00:00.123+00' + n * interval '1 microsecond'
+      FROM generate_series(1, 5) AS n`, [conversation.id, patient2]);
+    const seen: string[] = [];
+    let before: string | undefined;
+    do {
+      const page = await messages.listMessages(doctor2, conversation.id, 2, before ? { before } : {});
+      seen.push(...page.items.filter((item) => item.content.startsWith('burst')).map((item) => item.content));
+      before = page.nextCursor ?? undefined;
+    } while (before);
+    assert.deepEqual(seen, ['burst 5', 'burst 4', 'burst 3', 'burst 2', 'burst 1']);
+    const newest = await messages.listMessages(doctor2, conversation.id, 1);
+    assert.match(newest.items[0].createdAt, /^2030-01-01T00:00:00\.123005Z$/);
+  });
+
+  test('the after cursor returns only newer messages, newest first', async () => {
+    const conversation = await conversations.openCurrentDoctor(patient1);
+    const start = await messages.listMessages(patient1, conversation.id, 50);
+    assert.ok(start.latestCursor);
+    const empty = await messages.listMessages(patient1, conversation.id, 50, { after: start.latestCursor! });
+    assert.deepEqual(empty, { items: [], nextCursor: null, latestCursor: null });
+    await messages.sendMessage(doctor1, conversation.id, randomUUID(), 'new A');
+    await messages.sendMessage(patient1, conversation.id, randomUUID(), 'new B');
+    const fresh = await messages.listMessages(patient1, conversation.id, 50, { after: start.latestCursor! });
+    assert.deepEqual(fresh.items.map((item) => item.content), ['new B', 'new A']);
+    const limited = await messages.listMessages(patient1, conversation.id, 1, { after: start.latestCursor! });
+    assert.deepEqual(limited.items.map((item) => item.content), ['new A'], 'a full page means: ask again from latestCursor');
+    await assert.rejects(messages.listMessages(doctor2, conversation.id, 50, { after: start.latestCursor! }), { code: 'NOT_FOUND' });
+    await assert.rejects(messages.listMessages(patient1, conversation.id, 50, { before: start.latestCursor!, after: start.latestCursor! }), { code: 'VALIDATION' });
+  });
+
+  test('every committed message, including direct clinical-app inserts, gets exactly one outbox event', async () => {
+    await admin.query('UPDATE internal.message_outbox SET published_at = now() WHERE published_at IS NULL');
+    const conversation = await conversations.openCurrentDoctor(patient1);
+    const viaWorker = await messages.sendMessage(patient1, conversation.id, randomUUID(), 'outbox via worker');
+    await admin.query(`INSERT INTO public.messages (patient_id, doctor_id, sender_id, content)
+      VALUES ($1, $2, $3, 'outbox via clinical app')`, [patient1Row, doctor1, doctor1]);
+    // A rolled-back insert must not leave an event behind.
+    await admin.query('BEGIN');
+    await admin.query(`INSERT INTO public.messages (patient_id, doctor_id, sender_id, content) VALUES ($1, $2, $3, 'rolled back')`,
+      [patient1Row, doctor1, doctor1]);
+    await admin.query('ROLLBACK');
+    const pending = await admin.query<{ message_id: string; conversation_id: string; user_low: string; user_high: string }>(
+      'SELECT message_id, conversation_id, user_low, user_high FROM internal.message_outbox WHERE published_at IS NULL ORDER BY created_at');
+    assert.equal(pending.rows.length, 2);
+    assert.equal(pending.rows[0].message_id, viaWorker.id);
+    for (const row of pending.rows) {
+      assert.equal(row.conversation_id, conversation.id);
+      assert.deepEqual([row.user_low, row.user_high].sort(), [doctor1, patient1].sort());
+    }
+  });
+
+  test('the relay publishes signed events once, and keeps them pending when the broker fails', async () => {
+    const publisher = new RecordingPublisher();
+    const relay = new OutboxRelay(db, publisher, () => { throw new Error('not used'); });
+    publisher.fail = true;
+    await assert.rejects(relay.drainOnce(), /broker unavailable/);
+    const stillPending = await admin.query('SELECT count(*)::int AS n FROM internal.message_outbox WHERE published_at IS NULL');
+    assert.equal(stillPending.rows[0].n, 2, 'nothing is marked published when the publish fails');
+
+    publisher.fail = false;
+    publisher.published.length = 0;
+    assert.equal(await relay.drainOnce(), 2);
+    assert.equal(await relay.drainOnce(), 0);
+    assert.equal(publisher.published.length, 2);
+    for (const { subject, packet } of publisher.published) {
+      assert.equal(subject, EVENT_SUBJECTS.messageCreated);
+      const event = messageCreatedEventSchema.parse(verifyPacket(packet, bPublicKey));
+      assert.deepEqual([...event.participants].sort(), [doctor1, patient1].sort());
+      assert.ok(!('content' in event), 'events never carry message content');
+    }
+  });
+
+  test('concurrent relays never publish the same event twice', async () => {
+    const conversation = await conversations.openCurrentDoctor(patient1);
+    for (let i = 0; i < 30; i++) await messages.sendMessage(doctor1, conversation.id, randomUUID(), `concurrent ${i}`);
+    const publishers = [new RecordingPublisher(), new RecordingPublisher(), new RecordingPublisher()];
+    const relays = publishers.map((publisher) => new OutboxRelay(db, publisher, () => { throw new Error('not used'); }));
+    await Promise.all(relays.map(async (relay) => { while (await relay.drainOnce() > 0) { /* drain */ } }));
+    const ids = publishers.flatMap((publisher) => publisher.published.map(({ packet }) =>
+      messageCreatedEventSchema.parse(verifyPacket(packet, bPublicKey)).eventId));
+    assert.equal(ids.length, 30);
+    assert.equal(new Set(ids).size, 30);
+  });
+
+  test('a commit wakes the relay through LISTEN/NOTIFY', async () => {
+    const { Client } = await import('pg');
+    const listener = new Client({ connectionString: runtimeUrl });
+    await listener.connect();
+    try {
+      await listener.query('LISTEN messaging_outbox');
+      const notified = new Promise<string>((resolve) => listener.once('notification', (message) => resolve(message.channel)));
+      const conversation = await conversations.openCurrentDoctor(patient1);
+      await messages.sendMessage(patient1, conversation.id, randomUUID(), 'wake up');
+      assert.equal(await Promise.race([notified, new Promise((resolve) => setTimeout(() => resolve('timeout'), 3000))]), 'messaging_outbox');
+    } finally { await listener.end(); }
   });
 });

@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { credsAuthenticator } from '@nats-io/transport-node';
+import { connect, credsAuthenticator, type NatsConnection } from '@nats-io/transport-node';
 import { requiredEnv } from './env';
 
 export interface NatsTlsOptions { caFile: string; certFile?: string; keyFile?: string }
@@ -36,4 +36,12 @@ export function natsConnectionOptions(credentialsVariable: string) {
     authenticator: credsAuthenticator(readFileSync(requiredEnv(credentialsVariable))),
     ...(tls ? { tls } : {}),
   };
+}
+
+/**
+ * A plain NATS connection (outside the NestJS transport) for publishing or
+ * subscribing to live events. Reconnects indefinitely; callers drain it on shutdown.
+ */
+export function connectNats(credentialsVariable: string, name: string): Promise<NatsConnection> {
+  return connect({ ...natsConnectionOptions(credentialsVariable), name, maxReconnectAttempts: -1, reconnectTimeWait: 1000 });
 }

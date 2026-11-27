@@ -11,6 +11,10 @@ This map describes the current refactored source. The files under `dist/`, `node
 5. `apps/messaging-service/src/application/graphql-executor.service.ts` runs a fixed GraphQL document from `graphql-documents.ts` against `graphql-schema.ts`. Documents are parsed and validated once at startup, and resolvers call the conversation, care-contact and message repositories directly with the verified actor ID; no GraphQL HTTP listener is exposed.
 6. `apps/messaging-service/src/persistence/database-session.ts` owns the restricted PostgreSQL pool (with an idle-error handler), checks its role, and sets the actor ID for one transaction; a connection whose ROLLBACK fails is destroyed instead of being reused. `database-errors.ts` maps SQLSTATEs (`MP400`/`MP403`/`MP404`, `42501`, `P0002`, ...) to typed domain errors. `replay.store.ts` claims request IDs and cleans up expired ones. `conversation.repository.ts`, `care-contact.repository.ts`, and `message.repository.ts` contain their respective SQL. `row-mappers.ts` maps database rows to response fields. PostgreSQL RLS checks current doctor/patient membership.
 
+## Live event flow
+
+7. A committed insert into `public.messages` fires the trigger in `supabase/migrations/20261129_message_events.sql`. It writes `internal.message_outbox` and sends a NOTIFY. `apps/messaging-service/src/events/outbox-relay.service.ts` publishes a signed event for each pending row. `apps/api-gateway/src/transport/events/event-hub.service.ts` verifies it, and `event-router.ts` forwards it to the participants' streams opened through `transport/http/events.controller.ts`. The browser then calls the history endpoint with `after=`.
+
 ## File responsibilities
 
 | Path | Purpose |
@@ -28,6 +32,12 @@ This map describes the current refactored source. The files under `dist/`, `node
 | `apps/messaging-service/src/persistence/database-session.ts` | Pool, role check, transaction-scoped actor identity, broken-connection handling, lifecycle. |
 | `apps/messaging-service/src/persistence/database-errors.ts` | SQLSTATE to domain-error mapping. |
 | `apps/messaging-service/src/persistence/replay.store.ts` | One-time request-ID claims shared by all worker replicas. |
+| `apps/messaging-service/src/persistence/timestamps.ts` | Keeps PostgreSQL microseconds in timestamps and cursors. |
+| `apps/messaging-service/src/events/outbox-relay.service.ts` | LISTEN-driven relay: claims outbox rows, publishes signed events, marks them published. |
+| `apps/messaging-service/src/events/event-publisher.ts` | NATS connection used only to publish live events. |
+| `apps/api-gateway/src/transport/events/event-hub.service.ts` | Subscribes to live events and verifies signature, schema and freshness. |
+| `apps/api-gateway/src/transport/events/event-router.ts` | Routes events to participants' streams; de-duplication and connection limits. |
+| `apps/api-gateway/src/transport/http/events.controller.ts` | `GET /v1/events` server-sent-events stream with heartbeats and token-expiry close. |
 | `apps/messaging-service/src/persistence/conversation.repository.ts` | Open, create, and list conversations. |
 | `apps/messaging-service/src/persistence/care-contact.repository.ts` | Find current doctor or patient contacts by role. |
 | `apps/messaging-service/src/persistence/message.repository.ts` | Idempotent send and cursor-based history. |

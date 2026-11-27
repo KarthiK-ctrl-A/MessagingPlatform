@@ -1,13 +1,13 @@
 export const schemaText = `
   type Conversation { id: ID!, userLow: ID!, userHigh: ID!, createdAt: String! }
   type Message { id: ID!, conversationId: ID!, senderId: ID!, clientMessageId: ID!, content: String!, createdAt: String! }
-  type MessagePage { items: [Message!]!, nextCursor: String }
+  type MessagePage { items: [Message!]!, nextCursor: String, latestCursor: String }
   type CareContact { userId: ID!, fullName: String! }
   type CareContacts { role: String!, contacts: [CareContact!]! }
   type Query {
     careContacts: CareContacts!
     conversations(limit: Int!): [Conversation!]!
-    messages(conversationId: ID!, limit: Int!, before: String): MessagePage!
+    messages(conversationId: ID!, limit: Int!, before: String, after: String): MessagePage!
   }
   type Mutation {
     createConversation(otherUserId: ID!): Conversation!

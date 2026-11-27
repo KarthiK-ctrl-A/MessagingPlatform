@@ -41,8 +41,8 @@ export class GraphqlExecutorService {
         conversations.listConversations(ctx.actorId, limit, ctx.requestId),
       sendMessage: ({ conversationId, clientMessageId, content }: { conversationId: string; clientMessageId: string; content: string }, ctx: GraphContext) =>
         messages.sendMessage(ctx.actorId, conversationId, clientMessageId, content, ctx.requestId),
-      messages: ({ conversationId, limit, before }: { conversationId: string; limit: number; before?: string }, ctx: GraphContext) =>
-        messages.listMessages(ctx.actorId, conversationId, limit, before, ctx.requestId),
+      messages: ({ conversationId, limit, before, after }: { conversationId: string; limit: number; before?: string; after?: string }, ctx: GraphContext) =>
+        messages.listMessages(ctx.actorId, conversationId, limit, { before, after }, ctx.requestId),
     };
   }
 

@@ -16,10 +16,11 @@ export const documents: Record<RequestEnvelope['operation'], string> = {
       id conversationId senderId clientMessageId content createdAt
     }
   }`,
-  listMessages: `query($conversationId: ID!, $limit: Int!, $before: String) {
-    messages(conversationId: $conversationId, limit: $limit, before: $before) {
+  listMessages: `query($conversationId: ID!, $limit: Int!, $before: String, $after: String) {
+    messages(conversationId: $conversationId, limit: $limit, before: $before, after: $after) {
       items { id conversationId senderId clientMessageId content createdAt }
       nextCursor
+      latestCursor
     }
   }`,
 };

@@ -7,6 +7,12 @@ import { NatsGatewayService } from '../nats/nats-gateway.service';
 const createSchema = z.object({ otherUserId: z.uuid() }).strict();
 const sendSchema = z.object({ clientMessageId: z.uuid(), content: z.string().trim().min(1).max(2000) }).strict();
 
+const historySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50),
+  before: z.string().max(256).optional(),
+  after: z.string().max(256).optional(),
+}).strict().refine((value) => !(value.before && value.after));
+
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
   if (!result.success) throw new BadRequestException('Invalid request');
@@ -44,8 +50,9 @@ export class ConversationsController {
   }
 
   @Get(':id/messages')
-  history(@Req() req: ActorRequest, @Param('id', ParseUUIDPipe) id: string, @Query('limit') limit?: string, @Query('before') before?: string) {
-    const query = parse(z.object({ limit: z.coerce.number().int().min(1).max(50), before: z.string().max(256).optional() }).strict(), { limit: limit ?? '50', before });
+  history(@Req() req: ActorRequest, @Param('id', ParseUUIDPipe) id: string, @Query('limit') limit?: string,
+    @Query('before') before?: string, @Query('after') after?: string) {
+    const query = parse(historySchema, { limit: limit ?? '50', before, after });
     return this.messaging.execute('listMessages', { conversationId: id, ...query }, actor(req));
   }
 

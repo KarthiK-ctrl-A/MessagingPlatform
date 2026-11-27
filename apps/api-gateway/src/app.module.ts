@@ -7,7 +7,9 @@ import { AuthGuard } from './security/auth.guard';
 import { ipTracker, sessionTracker } from './security/throttle-trackers';
 import { ObserveModule } from './observe';
 import { ConversationsController } from './transport/http/conversations.controller';
+import { EventsController } from './transport/http/events.controller';
 import { HealthController } from './transport/http/health.controller';
+import { EventHub } from './transport/events/event-hub.service';
 import { NatsGatewayService } from './transport/nats/nats-gateway.service';
 import { PublicConfigController } from './transport/http/public-config.controller';
 
@@ -34,11 +36,12 @@ const perMinute = (variable: string, fallback: number) => Number(process.env[var
       options: { ...natsConnectionOptions('NATS_A_CREDENTIALS_FILE'), inboxPrefix: '_INBOX.gateway' },
     }),
   }])],
-  controllers: [ConversationsController, PublicConfigController, HealthController],
+  controllers: [ConversationsController, PublicConfigController, HealthController, EventsController],
   providers: [
     { provide: SupabaseJwtVerifier, useFactory: () => new SupabaseJwtVerifier(requiredEnv('SUPABASE_URL')) },
     AuthGuard,
     NatsGatewayService,
+    EventHub,
     { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
 })

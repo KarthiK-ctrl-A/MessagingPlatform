@@ -9,7 +9,7 @@ const messageRoute = /^\/v1\/conversations\/[0-9a-f-]{36}\/messages$/i;
 
 function safeRoute(path: string): string {
   if (path === '/') return '/';
-  if (path === '/v1/public-config' || path === '/v1/health' || path === '/v1/conversations' ||
+  if (path === '/v1/public-config' || path === '/v1/health' || path === '/v1/events' || path === '/v1/conversations' ||
       path === '/v1/conversations/care-contacts' || path === '/v1/conversations/current-doctor') return path;
   if (messageRoute.test(path)) return '/v1/conversations/:id/messages';
   return '/v1/unmatched';

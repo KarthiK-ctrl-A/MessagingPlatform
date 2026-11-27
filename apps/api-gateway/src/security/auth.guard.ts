@@ -2,7 +2,7 @@ import { CanActivate, ExecutionContext, Injectable, Logger, UnauthorizedExceptio
 import { SupabaseJwtVerifier } from '@messaging/security';
 import type { LoggedRequest } from '../transport/http/request-logging';
 
-export interface Actor { id: string; accessToken: string; requestId?: string }
+export interface Actor { id: string; accessToken: string; requestId?: string; /** Token expiry, epoch seconds. */ expiresAt?: number }
 export interface ActorRequest extends LoggedRequest { actor?: Actor }
 
 @Injectable()
@@ -18,8 +18,8 @@ export class AuthGuard implements CanActivate {
       throw new UnauthorizedException('Bearer token required');
     }
     try {
-      const id = await this.verifier.verify(match[1]);
-      req.actor = { id, accessToken: match[1], requestId: req.requestId };
+      const { userId, expiresAt } = await this.verifier.verifyClaims(match[1]);
+      req.actor = { id: userId, accessToken: match[1], requestId: req.requestId, expiresAt };
       this.logger.log(`service=api-gateway stage=auth.accept requestId=${req.requestId ?? 'unknown'}`);
       return true;
     } catch {

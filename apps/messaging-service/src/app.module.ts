@@ -7,6 +7,8 @@ import { CareContactRepository } from './persistence/care-contact.repository';
 import { MessageRepository } from './persistence/message.repository';
 import { ReplayStore } from './persistence/replay.store';
 import { GraphqlExecutorService } from './application/graphql-executor.service';
+import { EVENT_PUBLISHER, NatsEventPublisher } from './events/event-publisher';
+import { createListenClient, LISTEN_CLIENT_FACTORY, OutboxRelay } from './events/outbox-relay.service';
 import { NatsController } from './transport/nats/nats.controller';
 import { SignedRequestGuard, VerifiedRequests } from './security/request.guard';
 
@@ -24,6 +26,9 @@ import { SignedRequestGuard, VerifiedRequests } from './security/request.guard';
     { provide: PG_POOL, useFactory: createPool },
     VerifiedRequests, SignedRequestGuard, DatabaseSession, ReplayStore,
     ConversationRepository, CareContactRepository, MessageRepository, GraphqlExecutorService,
+    { provide: EVENT_PUBLISHER, useClass: NatsEventPublisher },
+    { provide: LISTEN_CLIENT_FACTORY, useValue: createListenClient },
+    OutboxRelay,
   ],
 })
 export class AppModule {}

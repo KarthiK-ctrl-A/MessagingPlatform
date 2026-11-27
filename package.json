@@ -15,7 +15,8 @@
     "nats:bootstrap": "node scripts/bootstrap-nats.mjs",
     "nats:verify": "node scripts/verify-nats-auth.mjs",
     "service:new": "node scripts/new-service.mjs",
-    "test:integration": "node scripts/integration-tests.mjs"
+    "test:integration": "node scripts/integration-tests.mjs",
+    "nats:update-permissions": "node scripts/update-nats-permissions.mjs"
   },
   "devDependencies": {
     "@nats-io/jwt": "^0.1.0",

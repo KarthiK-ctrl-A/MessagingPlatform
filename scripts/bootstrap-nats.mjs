@@ -1,10 +1,9 @@
-import { existsSync } from 'node:fs';
 import { mkdir, readdir, writeFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { encodeAccount, encodeOperator, encodeUser, fmtCreds } from '@nats-io/jwt';
 import { createAccount, createOperator, createUser } from '@nats-io/nkeys';
+import { userPermissions } from './nats-permissions.mjs';
 
 const repo = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const output = resolve(repo, 'secrets/nats');
@@ -18,12 +17,6 @@ const account = createAccount();
 const system = createAccount();
 const gateway = createUser();
 const worker = createUser();
-// Subjects come from @messaging/contracts so broker permissions cannot drift from
-// the handlers. `auth-probe` is used only by scripts/verify-nats-auth.mjs.
-const contractsPath = resolve(repo, 'packages/contracts/dist/index.js');
-if (!existsSync(contractsPath)) throw new Error('Run `npm run build` before `npm run nats:bootstrap`');
-const { REQUEST_SUBJECTS } = createRequire(import.meta.url)(contractsPath);
-const requestSubjects = [...REQUEST_SUBJECTS, 'messaging.v1.query.auth-probe'];
 const accountLimits = {
   imports: -1, exports: -1, wildcards: true, conn: -1, leaf: -1,
   data: -1, payload: 65536, subs: -1, disallow_bearer: true,
@@ -33,16 +26,8 @@ const accountJwt = await encodeAccount('MESSAGING', account,
   { disallow_bearer: true, limits: accountLimits }, { signer: operator });
 const systemJwt = await encodeAccount('SYSTEM', system,
   { limits: accountLimits }, { signer: operator });
-const gatewayJwt = await encodeUser('gateway', gateway, account, {
-  pub: { allow: requestSubjects },
-  sub: { allow: ['_INBOX.gateway.>'] },
-  payload: 65536,
-});
-const workerJwt = await encodeUser('worker', worker, account, {
-  sub: { allow: requestSubjects },
-  resp: { max: 1, ttl: 10_000_000_000 },
-  payload: 65536,
-});
+const gatewayJwt = await encodeUser('gateway', gateway, account, userPermissions.gateway);
+const workerJwt = await encodeUser('worker', worker, account, userPermissions.worker);
 
 // Optional broker TLS: pass the certificate/key paths as the broker will see them
 // (for Compose, under /etc/nats/tls). Clients then set NATS_TLS_CA_FILE.

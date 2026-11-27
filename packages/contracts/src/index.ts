@@ -9,6 +9,12 @@ export const SUBJECTS = {
   listMessages: 'messaging.v1.query.history',
 } as const;
 
+/** Live events published by B after commit and consumed by every gateway instance. */
+export const EVENT_SUBJECTS = {
+  messageCreated: 'messaging.v1.event.message-created',
+} as const;
+export const EVENT_SUBJECT_WILDCARD = 'messaging.v1.event.>';
+
 /** Every request subject; the single source for NATS permissions and handlers. */
 export const REQUEST_SUBJECTS: readonly string[] = Object.values(SUBJECTS);
 
@@ -67,7 +73,8 @@ export const requestSchema = z.discriminatedUnion('operation', [
       conversationId: uuid,
       limit: z.number().int().min(1).max(50),
       before: z.string().max(256).optional(),
-    }).strict(),
+      after: z.string().max(256).optional(),
+    }).strict().refine((value) => !(value.before && value.after), 'Use either before or after'),
   }).strict(),
 ]);
 
@@ -88,6 +95,24 @@ export const responseSchema = z.discriminatedUnion('ok', [
   }).strict() }).strict(),
 ]);
 export type ResponseEnvelope = z.infer<typeof responseSchema>;
+
+/**
+ * A signed live event. It carries identifiers only, never message content: the
+ * gateway uses `participants` to choose which connected users to notify, and
+ * clients fetch the message through the normal authorised history read.
+ */
+export const messageCreatedEventSchema = z.object({
+  audience: z.literal('api-gateway'),
+  type: z.literal('message.created'),
+  eventId: z.uuid(),
+  messageId: z.uuid(),
+  conversationId: z.uuid(),
+  participants: z.tuple([z.uuid(), z.uuid()]),
+  occurredAt: z.iso.datetime({ offset: true }),
+  issuedAt: z.number().int(),
+  expiresAt: z.number().int(),
+}).strict();
+export type MessageCreatedEvent = z.infer<typeof messageCreatedEventSchema>;
 
 const cursorSchema = z.object({ createdAt: z.iso.datetime({ offset: true }), id: uuid }).strict();
 export type Cursor = z.infer<typeof cursorSchema>;

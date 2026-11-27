@@ -36,7 +36,7 @@ The browser sends the email/password login directly to Supabase Auth, so that lo
 
 Apply `supabase/migrations/20261127_fast_message_history.sql` in the existing Supabase project's SQL Editor as the migration owner, then restart `messaging-service`. Its startup log should say `stage=db.history_fast_path enabled=true`. A history read then sends one database statement that sets a transaction-local actor, verifies current conversation membership through RLS, and fetches one indexed message page. The replay claim remains a separate database round trip. The old multi-statement read is retained as a fallback until the migration is installed. Compare `operation=listMessages stage=db.done durationMs=...` before and after; the REST and NATS APIs do not change. The migration creates a function only and does not rewrite the message table or add a duplicate index.
 
-Live push, an outbox/JetStream relay, cross-network deployment manifests, and production observability are subsequent phases. The local broker now uses operator/account/user JWTs and NKeys, and supports TLS (see *NATS TLS* below); the default local Compose network is still plaintext, so **do not deploy it across networks without enabling TLS**. With `NODE_ENV=production` both services refuse to start unless `NATS_TLS_CA_FILE` is set.
+Live delivery is implemented (see *Live delivery* below). Cross-network deployment manifests and production observability are subsequent phases. The local broker now uses operator/account/user JWTs and NKeys, and supports TLS (see *NATS TLS* below); the default local Compose network is still plaintext, so **do not deploy it across networks without enabling TLS**. With `NODE_ENV=production` both services refuse to start unless `NATS_TLS_CA_FILE` is set.
 
 ### Current security status
 
@@ -51,7 +51,7 @@ B refuses to run unless its database login is the non-superuser `messaging_b_run
 ## Prerequisites and setup
 
 1. Install Node.js 24+, npm, and Docker Desktop (or another Docker engine). Use the existing ClinicalWebApp Supabase project with asymmetric Auth JWT signing keys, a patient profile/row, and their assigned doctor. Keep its Data API and Realtime enabled.
-2. Apply the ClinicalWebApp migrations first, including its message RLS policy. Then apply `supabase/migrations/20261124_clinical_messaging.sql` once as the migration owner, followed by `supabase/migrations/20261124_messaging_portals.sql`, `supabase/migrations/20261127_fast_message_history.sql`, and `supabase/migrations/20261128_error_codes.sql`. The first extends `public.messages`, backfills existing messages into conversations, and adds a trigger so the clinical app's old insert shape keeps working. The second adds replay-table RLS policies and limited access to current care-contact names. The third speeds up history reads without changing tables. The fourth gives SQL business-rule errors stable SQLSTATE codes (`MP400`/`MP403`/`MP404`) so B returns 400/403/404 instead of 503; B also understands the pre-migration messages, so the order of deploying B and this migration does not matter. **Before applying the first two migrations**, check whether `public.patients` and `public.profiles` already have RLS enabled (`SELECT relname, relrowsecurity FROM pg_class WHERE relname IN ('patients','profiles')`): enabling RLS on a table that the clinical app reads without policies would block those reads. Do **not** apply the removed standalone messaging migration. The first migration creates a new restricted `messaging_b_runtime` role and leaves any pre-existing `messaging_app` role untouched. Set a strong password for `messaging_b_runtime` **outside source control**, restrict database network access to B's egress, use a session-pooler connection string for that role, and download the database CA certificate. Back up the database and plan a maintenance window if `public.messages` is large: backfill and constraints take locks.
+2. Apply the ClinicalWebApp migrations first, including its message RLS policy. Then apply `supabase/migrations/20261124_clinical_messaging.sql` once as the migration owner, followed by `supabase/migrations/20261124_messaging_portals.sql`, `supabase/migrations/20261127_fast_message_history.sql`, `supabase/migrations/20261128_error_codes.sql`, and `supabase/migrations/20261129_message_events.sql`. The first extends `public.messages`, backfills existing messages into conversations, and adds a trigger so the clinical app's old insert shape keeps working. The second adds replay-table RLS policies and limited access to current care-contact names. The third speeds up history reads without changing tables. The fourth gives SQL business-rule errors stable SQLSTATE codes (`MP400`/`MP403`/`MP404`) so B returns 400/403/404 instead of 503; B also understands the pre-migration messages, so the order of deploying B and this migration does not matter. **Before applying the first two migrations**, check whether `public.patients` and `public.profiles` already have RLS enabled (`SELECT relname, relrowsecurity FROM pg_class WHERE relname IN ('patients','profiles')`): enabling RLS on a table that the clinical app reads without policies would block those reads. Do **not** apply the removed standalone messaging migration. The first migration creates a new restricted `messaging_b_runtime` role and leaves any pre-existing `messaging_app` role untouched. Set a strong password for `messaging_b_runtime` **outside source control**, restrict database network access to B's egress, use a session-pooler connection string for that role, and download the database CA certificate. Back up the database and plan a maintenance window if `public.messages` is large: backfill and constraints take locks.
 3. Run `npm install`, `npm run build`, and `npm run nats:bootstrap` in this repository. The bootstrap runs once and refuses to overwrite existing identities. Keep `secrets/nats/operator.seed`, `account.seed`, and `system.seed` in a trusted offline store for production; only `gateway.creds` and `worker.creds` are mounted to their respective services. Never commit or share any `.creds` or `.seed` file.
 4. Copy `.env.example` to `.env`. Set `SUPABASE_URL` to the clinical project's URL, `SUPABASE_PUBLISHABLE_KEY` to its browser-safe publishable key, and `DATABASE_URL` to the **restricted `messaging_b_runtime` role**, never `postgres`. Put the database CA certificate at `secrets/db-ca.pem`. Run `npm run keys:generate` and paste the four application signing-key values into `.env`. For host-based runs, set `NATS_A_CREDENTIALS_FILE` and `NATS_B_CREDENTIALS_FILE` to the generated files. Compose mounts those files at fixed container paths. The Supabase JWT, NATS credentials, and A/B packet-signing keys are distinct identities.
 5. Start Docker Desktop or Podman, then run `docker compose --env-file .env up --build` or `podman compose --env-file .env up --build`. The web interface is at `http://127.0.0.1:3001/` and A's REST API is at `http://127.0.0.1:3001/v1`; B has no public HTTP endpoint. NATS port 4222 is mapped only to host loopback for local debugging. After bootstrap, a connection without a valid user JWT and matching NKey seed is rejected. Run `npm run nats:verify` on the host to check A/B request-reply and rejection of anonymous and old password connections.
@@ -73,8 +73,32 @@ Obtain user access tokens with Supabase Auth for the two test accounts. All mess
 | `NATS_TLS_CERT_FILE` / `NATS_TLS_KEY_FILE` | both | unset | Optional client certificate for mutual TLS. |
 | `DATABASE_SSL_MODE` | worker | `verify-full` | `disable` is allowed only outside production (local Postgres, integration tests). |
 | `DATABASE_POOL_MAX` | worker | `10` | Database pool size per worker replica. |
+| `OUTBOX_RELAY_ENABLED` | worker | `true` | Set `false` to stop this replica publishing live events (others keep publishing). |
+| `OUTBOX_SAFETY_POLL_MS` | worker | `10000` | Fallback check for unpublished events if a NOTIFY is missed. |
+| `EVENT_STREAMS_PER_USER` | gateway | `5` | Concurrent live-event streams per user (browser tabs). |
+| `EVENT_STREAMS_MAX` | gateway | `10000` | Concurrent live-event streams per gateway instance. |
+| `EVENT_HEARTBEAT_MS` | gateway | `25000` | Keep-alive interval; keep it below your load balancer's idle timeout. |
 
 The gateway exposes `GET /v1/health` (unauthenticated, not rate limited). It returns 503 while the NATS connection is down; Compose uses it as the container health check.
+
+### Live delivery
+
+New messages are pushed to browsers instead of being polled:
+
+1. Every committed row in `public.messages` (written by this service **or directly by the clinical app**) gets an outbox row in the same transaction, via a trigger from `20261129_message_events.sql`. The trigger then sends a PostgreSQL `NOTIFY`.
+2. Each worker runs a relay. The relay `LISTEN`s for that notification, claims pending rows with `FOR UPDATE SKIP LOCKED`, publishes a signed `message.created` event on NATS and marks the rows published. Any number of replicas can run it. Events carry IDs and the two participant user IDs only, never message content.
+3. Every gateway instance subscribes. It verifies each event's signature and freshness, drops duplicates, and forwards the event to that user's open streams on `GET /v1/events` (server-sent events).
+4. The browser fetches only the new messages with `GET /v1/conversations/:id/messages?after=<latestCursor>`. On reconnect it fills any gap the same way. A slow safety check runs every 2 minutes, or every 15 s while disconnected.
+
+Who receives an event: only the conversation's two participants. A message can only be inserted while that patient/doctor pair is the current assignment, so both are authorised at that moment. A doctor who is reassigned stops receiving events, because no further messages can be written to the old pair's conversation.
+
+Upgrading an existing installation:
+
+- Apply `20261129_message_events.sql`. Until you do, the worker logs `stage=outbox.disabled` and the web app falls back to polling every 15 s.
+- Run `npm run build && npm run nats:update-permissions`, then recreate both services (`docker compose up -d --force-recreate api-gateway messaging-service`). Until you do, the gateway logs `stage=events.forbidden`, `/v1/health` shows `"events":"forbidden"`, and browsers poll every 15 s; everything else keeps working. This re-issues `gateway.creds` and `worker.creds` with the event permissions, keeping their keys; the broker config is unchanged. It also narrows the worker to publishing events only.
+  - `npm run nats:verify` checks event delivery, and checks that the worker cannot forge requests.
+- `LISTEN` needs a session-mode connection. Supabase's session pooler (port 5432) and direct connections work; the transaction pooler (port 6543) does not deliver notifications. If notifications are unavailable, the relay's safety check still publishes, just up to 10 s later.
+- Load balancers and proxies must allow long-lived responses. Set the idle timeout above `EVENT_HEARTBEAT_MS`, and do not buffer `text/event-stream` (the gateway sends `X-Accel-Buffering: no` for nginx).
 
 ### NATS TLS
 
@@ -122,7 +146,15 @@ POST /v1/conversations/<conversation-uuid>/messages
 
 GET /v1/conversations/<conversation-uuid>/messages?limit=50
 GET /v1/conversations/<conversation-uuid>/messages?limit=50&before=<nextCursor>
+GET /v1/conversations/<conversation-uuid>/messages?limit=50&after=<latestCursor>
+
+GET /v1/events
+Server-sent events (Accept: text/event-stream). Frames: `ready`, `message-created`
+{ eventId, conversationId, messageId, occurredAt }, and `session-expired` when the
+access token expires (reconnect with a refreshed token). Comment lines are heartbeats.
 ```
+
+Pages are always newest first. `nextCursor` continues backwards; `latestCursor` marks the newest item returned. With `after`, a full page (`limit` items) means more may be waiting: request again from the new `latestCursor`. Timestamps have microsecond precision (`2026-11-27T21:39:30.022123Z`).
 
 Retry a timed-out send with the **same** `clientMessageId`. A returns the committed message only after B replies. Each REST request has a six-second NATS deadline.
 
@@ -132,9 +164,9 @@ Run `npm run service:new -- <service-name>` to create the same NestJS service la
 
 ## Repository structure
 
-- `apps/api-gateway/src/transport/http`: REST controllers and request logging; `security`: Supabase JWT guard; `transport/nats`: signed NATS client.
+- `apps/api-gateway/src/transport/http`: REST controllers, the SSE endpoint and request logging; `security`: Supabase JWT guard and throttle keys; `transport/nats`: signed NATS client; `transport/events`: live-event subscription and routing.
 - `apps/web`: static sign-in and messaging interface served by A.
-- `apps/messaging-service/src/security` and `transport/nats`: signed-request guard and NATS handlers; `application`: fixed GraphQL operations; `persistence`: restricted PostgreSQL session and focused query repositories.
+- `apps/messaging-service/src/security` and `transport/nats`: signed-request guard and NATS handlers; `application`: fixed GraphQL operations; `persistence`: restricted PostgreSQL session and focused query repositories; `events`: outbox relay and NATS event publisher.
 - `packages/contracts`: NATS subjects, strict request/response schemas, cursors.
 - `packages/security`: Ed25519 packet signatures and Supabase JWT verifier.
 - `supabase/migrations`: adaptation of the clinical `public.messages` table, dedicated DB role, RLS, replay table, and database functions.

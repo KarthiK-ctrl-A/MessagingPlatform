@@ -5,7 +5,7 @@ import { signedPacketSchema, type SignedPacket } from '@messaging/contracts';
 import { requiredEnv } from './env';
 
 export { requiredEnv } from './env';
-export { natsConnectionOptions, natsTlsOptions, type NatsTlsOptions } from './nats';
+export { connectNats, natsConnectionOptions, natsTlsOptions, type NatsTlsOptions } from './nats';
 
 /** Fails fast at startup if a required signing or verification key is missing or malformed. */
 export function assertServiceKeys(privateKeyVariable: string, publicKeyVariable: string): void {
@@ -69,11 +69,17 @@ export class SupabaseJwtVerifier {
   }
 
   async verify(token: string): Promise<string> {
+    return (await this.verifyClaims(token)).userId;
+  }
+
+  /** Verified user ID and token expiry (epoch seconds), e.g. to end a long-lived stream on time. */
+  async verifyClaims(token: string): Promise<{ userId: string; expiresAt: number }> {
     const { payload } = await jwtVerify(token, this.jwks, {
       issuer: this.issuer,
       audience: 'authenticated',
+      requiredClaims: ['exp'],
     });
     if (typeof payload.sub !== 'string') throw new Error('Missing user identity');
-    return payload.sub;
+    return { userId: payload.sub, expiresAt: payload.exp as number };
   }
 }
