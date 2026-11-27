@@ -4,11 +4,12 @@ import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
+import { ObserveInstrument } from './observe';
 import helmet from 'helmet';
 import { requestLogging } from './transport/http/request-logging';
 
 async function main() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { instrument: ObserveInstrument });
   const supabaseOrigin = new URL(process.env.SUPABASE_URL ?? 'https://example.supabase.co').origin;
   app.use(helmet({ contentSecurityPolicy: { directives: {
     connectSrc: ["'self'", supabaseOrigin],

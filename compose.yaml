@@ -22,6 +22,8 @@ services:
       SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-}
       A_PRIVATE_KEY: ${A_PRIVATE_KEY}
       B_PUBLIC_KEY: ${B_PUBLIC_KEY}
+      OBSERVE_APP_KEY: ${OBSERVE_APP_KEY:-}
+      OBSERVE_APP_SECRET: ${OBSERVE_APP_SECRET:-}
     volumes:
       - ./secrets/nats/gateway.creds:/run/secrets/nats-gateway.creds:ro
     ports:
@@ -41,6 +43,8 @@ services:
       DATABASE_CA_CERT_PATH: /app/secrets/db-ca.pem
       A_PUBLIC_KEY: ${A_PUBLIC_KEY}
       B_PRIVATE_KEY: ${B_PRIVATE_KEY}
+      OBSERVE_B_APP_KEY: ${OBSERVE_B_APP_KEY:-}
+      OBSERVE_B_APP_SECRET: ${OBSERVE_B_APP_SECRET:-}
     volumes:
       - ./secrets/db-ca.pem:/app/secrets/db-ca.pem:ro
       - ./secrets/nats/worker.creds:/run/secrets/nats-worker.creds:ro

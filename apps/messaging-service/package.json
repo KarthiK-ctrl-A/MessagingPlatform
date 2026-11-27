@@ -17,7 +17,8 @@
     "graphql": "^16.11.0",
     "pg": "^8.16.3",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "@nestjs/observe": "^0.3.29"
   },
   "devDependencies": {
     "@types/pg": "^8.15.5"

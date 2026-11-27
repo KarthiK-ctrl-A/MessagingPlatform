@@ -44,6 +44,17 @@ export class MessageRepository {
       try { cursor = decodeCursor(before); }
       catch { throw new DomainError('VALIDATION', 'Invalid cursor'); }
     }
+    let rows: MessageRow[] | null;
+    try {
+      rows = await this.db.readMessagePage(actorId, conversationId, limit + 1,
+        cursor?.createdAt ?? null, cursor?.id ?? null, requestId);
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'P0002') {
+        throw new DomainError('NOT_FOUND', 'Conversation not found');
+      }
+      throw error;
+    }
+    if (rows !== null) return this.page(rows, limit);
     return this.db.asActor(actorId, 'listMessages', requestId, async (client) => {
       await this.assertMember(client, conversationId);
       const result = await client.query<MessageRow>(
@@ -54,10 +65,14 @@ export class MessageRepository {
          ORDER BY created_at DESC,id DESC LIMIT $4`,
         [conversationId, cursor?.createdAt ?? null, cursor?.id ?? null, limit + 1],
       );
-      const page = result.rows.slice(0, limit);
-      const last = page.at(-1);
-      return { items: page.map(message), nextCursor: result.rows.length > limit && last
-        ? encodeCursor({ createdAt: last.created_at.toISOString(), id: last.id }) : null };
+      return this.page(result.rows, limit);
     });
+  }
+
+  private page(rows: MessageRow[], limit: number) {
+    const page = rows.slice(0, limit);
+    const last = page.at(-1);
+    return { items: page.map(message), nextCursor: rows.length > limit && last
+      ? encodeCursor({ createdAt: last.created_at.toISOString(), id: last.id }) : null };
   }
 }
